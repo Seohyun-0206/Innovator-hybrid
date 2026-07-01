@@ -16,7 +16,6 @@ The first provider is local Ollama. OpenAI and Gemini are available through prov
 ## Run Backend
 
 ```bash
-cd web
 python -m venv backend/.venv
 backend/.venv/Scripts/pip install -r backend/requirements.txt
 backend/.venv/Scripts/python backend/manage.py migrate
@@ -29,7 +28,6 @@ backend/.venv/Scripts/python backend/manage.py runserver 127.0.0.1:8000
 The API uses DRF token authentication. Create an initial admin user for local development:
 
 ```bash
-cd web
 backend/.venv/Scripts/python backend/manage.py shell -c "from django.contrib.auth.models import User; u,_=User.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True, 'is_active': True}); u.is_staff=True; u.is_superuser=True; u.is_active=True; u.set_password('admin1234'); u.save()"
 ```
 
@@ -40,7 +38,7 @@ New and changed passwords are stored with Django's `BCryptSHA256PasswordHasher`.
 ## Run Frontend
 
 ```bash
-cd web/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -65,7 +63,6 @@ OpenAI and Gemini credentials can be managed from the Credentials screen. Base U
 For production-like use, set a stable encryption key before creating credentials:
 
 ```bash
-cd web
 backend/.venv/Scripts/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 $env:CREDENTIAL_ENCRYPTION_KEY="generated-key"
 ```
