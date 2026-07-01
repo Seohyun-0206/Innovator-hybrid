@@ -1,0 +1,418 @@
+﻿=== PAGE 1 ===
+Hybrid LLM Routing Policy  
+ 
+ 
+1. 개요 
+ 
+LLM 모델은 동일한 규모라 하더라도 정확도, 지연시간, 출력량, 응답 안정성 등 특성이 
+다르게 나타난다. 
+따라서 단일 모델을 고정적으로 사용하는 방식 보다, 서비스 목적과 요청 특성에 따라 
+적절한 모델을 선택할 수 있는 Hybrid Routing 전략이 필요하다. 
+ 
+본 문서는 모델 평가 결과를 기반으로 모델군(Model Tier)을 분류하고, 서비스 기능 및 운영 
+조건에 따라 적합한 Routing Rule과 Routing Policy를 생성하기 위한 기준을 정의한다. 
+ 
+2. 적용 범위 
+ 
+구분 
+내용 
+정책 수준 
+Rule-based Routing 
+적용 환경 
+Local / On-prem / API 기반 LLM 환경 
+평가 기준 
+Accuracy, Latency, Output Token, Failure Rate 
+대상 서비스 
+챗봇, QA, 문서 요약, SQL 생성, RAG 
+제외 범위 
+학습형 Routing, Multi-Agent Orchestration 
+ 
+3. Model Tier 정의 
+ 
+Tier 
+역할 
+특징 
+목적 
+예시 모델 
+Lightweight 
+Fast Path 
+low latency / 
+low cost 
+실시간 응답, 
+FAQ 
+Phi-3, Qwen 3B 
+Standard 
+General Path 
+balanced 
+일반 QA, 업무 
+질의 
+Llama 3, Qwen 
+8B 
+Advanced 
+Accurate / 
+Escalation 
+high accuracy / 
+reasoning 
+고난도 추론, 
+검증 
+GPT-OSS-120b
+, GPT-4o, 
+Claude Opus 
+Long Context 
+Context Path 
+긴 문맥 처리 
+문서 QA, RAG 
+Kimi 
+Structured 
+Structured Output 
+Path 
+format 안전성 
+SQL/JSON 
+생성 
+ 
+ 
+ 
+4. 서비스 기능별 권장 모델 전략 
+ 
+
+=== PAGE 2 ===
+서비스 기능 
+요구사항 
+권장 Tier 
+일반 FAQ 
+빠른 응답 
+Lightweight 
+실시간 운영 챗봇 
+SLA 우선 
+Lightweight 
+일반 업무 QA 
+균형형 응답 
+Standard 
+정책/규정 QA 
+정확도 우선 
+Advanced 
+보고서 생성 
+긴 reasoning 
+Advanced 
+SQL/JSON 생성 
+구조화 출력 
+Structured 
+문서 요약 
+긴 출력 처리 
+Standard / Advanced 
+RAG 기반 문서 QA 
+긴 문맥 
+Long Context 
+회의록 분석 
+context 유지 
+Long Context 
+재검증 요청 
+신뢰성 확보 
+Advanced 
+ 
+5. Routing Rule 상세 
+ 
+Rule ID 
+조건 
+Route 
+운영 옵션 
+R-01 
+일반 FAQ / 단순 질의  
+Lightweight Path 
+즉시 응답 
+R-02 
+SLA / 실시간 응답 필요 
+Lightweight Path 
+p95 latency 모니터링 
+R-03 
+일반 업무 질의 
+Standard Path 
+기본 응답 
+R-04 
+정확도 우선 요청 
+Advanced Path 
+Timeout guard 적용 
+R-05 
+고난도 추론 / 복합 
+reasoning 
+Advanced Path 
+Reasoning 우선 
+R-06 
+긴 문서 기반 QA 
+Long Context Path 
+Context 유지 
+R-07 
+SQL/JSON 생성 
+Structured Path 
+Format validation 
+R-08 
+출력량 과다 예상 
+Token-Control Path 
+max_tokens 적용 
+R-09 
+timeout 발생 
+Fallback Path 
+대체 모델 호출 
+R-10 
+parse fail 발생 
+Retry Path 
+strict prompt 재시도 
+R-11 
+신뢰도 낮음 / 재검증 
+필요 
+Escalation Path 
+Advanced Tier 재검증 
+
+=== PAGE 3 ===
+R-12 
+API 실패 
+Fallback Path 
+대체 모델 호출 
+R-13 
+모델 성능 차이 미미 
+Efficiency Path 
+latency/cost 우선 선택 
+ 
+6. Threshold (정책 발동 조건) 
+ 
+항목 
+기준 
+Fast Path 기준 
+p95 latency 기준 이하 
+Accurate Path 기준 
+정확도 차이 threshold 이상 
+Token Control 기준 
+output token threshold 초과 
+Timeout 기준 
+응답시간 threshold 초과 
+Parse Fail 기준 
+형식 불일치 발생 
+Fallback 기준 
+timeout / parse fail / API fail 
+Escalation 기준 
+신뢰도 낮음 또는 재검증 요청 
+Efficiency Path 기준 
+모델 성능 차이가 미미할 경우 latency 및 cost 효율 우선 
+ 
+7. Response Validation 및  예외 처리 정책 
+ 
+Validation 항목 
+목적 
+Validation 실패 시 대응 
+Parse Validation 
+JSON/SQL 형식 검증 
+Strict Retry 수행 
+Timeout Check 
+SLA 준수 여부 확인 
+Fallback Path 수행 
+Retry Validation 
+Retry 성공 여부 확인 
+Retry 횟수 제한 후 Escalation 
+Groundedness Check 
+문서 기반 응답 여부 검증 
+RAG 재검색 또는 Escalation 
+Hallucination Risk Check 
+허위 정보 가능성 최소화 
+Advanced Tier 재검증 
+Context Validation 
+긴 문맥 유지 여부 확인 
+Long Context Tier 전환 
+ 
++​ Response Validation은 Routing Rule에 따라 선택된 모델의 응답이 실제 서비스에서 
+사용 가능한지 확인하는 단계이다.  
++​ 이는 모델 선택 이후 발생할 수 있는 형식 오류, timeout, 근거 부족, 문맥 누락 등의 
+문제를 탐지하고, Retry·Fallback·Escalation 등 예외 처리 정책을 수행하기 위한 
+기준으로 활용된다.  
+ 
+8. Routing Flow 
+ 
+
+=== PAGE 4 ===
+ 
+ 
+ 
+9. 성능 평가 체계 
+ 
+9.1 서비스 기능별 테스트 케이스 유형 
+ 
+서비스 기능 
+테스트 케이스 유형 
+목적 
+일반 FAQ 
+단순 질의응답 
+빠른 응답 및 기본 정확도 확인 
+실시간 운영 챗봇 
+짧은 운영 질의 
+SLA 및 latency 검증 
+일반 업무 QA 
+일반 업무 설명 
+균형형 응답 품질 검증 
+정책/규정 QA 
+근거 기반 질의 
+정확도 및 hallucination 최소화 
+보고서 생성 
+긴 응답 생성 
+reasoning 및 응답 품질 검증 
+SQL/JSON 생성 
+구조화 출력 요청 
+format 안정성 검증 
+문서 요약 
+긴 문서 입력 
+긴 출력 및 요약 품질 검증 
+RAG 기반 QA 
+문서 기반 질의 
+retrieval 및 groundedness 검증 
+회의록 분석 
+긴 context 입력 
+문맥 유지 및 정보 추출 검증 
+
+=== PAGE 5 ===
+재검증 요청 
+기존 응답 검토 
+신뢰성 및 correction 검증 
+ 
+9.2. 검증 기준 핵심 지표 설명 
+ 
+지표 
+설명 
+주 사용 목적 
+Accuracy 
+정답 또는 기대 결과를 얼마나 정확하게 
+생성했는지 평가 
+일반 QA, 정책 QA 
+Latency 
+요청 후 응답까지 걸리는 시간 
+실시간 챗봇, SLA 
+p95 Latency 
+전체 요청 중 95%가 이 시간 안에 응답되는 
+지표 
+SLA 및 운영 안정성 
+Timeout Rate 
+응답 제한 시간을 초과한 비율 
+Fast Path / Fallback 
+검증 
+Human Review 
+Score 
+사람이 평가한 응답 품질 점수 
+업무 QA, 보고서 생성 
+Groundedness 
+응답이 실제 문서/근거 기반인지 평가 
+RAG, 정책 QA 
+Completeness 
+요청한 내용이 얼마나 빠짐없이 포함되었는지 
+평가 
+보고서 생성 
+Output Quality 
+응답 구조, 논리 흐름, 가독성 품질 평가 
+보고서 생성 
+Parse Success 
+JSON/SQL 등 구조화 출력이 정상 형식인지 
+평가 
+Structured Output 
+Format 
+Validation 
+지정된 output schema를 준수하는지 검증 
+SQL/JSON 생성 
+Coverage 
+입력 문서의 핵심 내용을 얼마나 포함했는지 
+평가 
+문서 요약 
+Summary 
+Quality 
+요약 과정에서 불필요한 정보 제거 및 핵심 
+유지 여부 
+문서 요약 
+Retrieval Hit 
+Rate 
+검색된 문서가 실제 질문과 관련 있는 비율 
+RAG 
+Extraction 
+Accuracy 
+특정 정보(Action Item 등)를 정확히 
+추출했는지 평가 
+회의록 분석 
+Reliability 
+응답 일관성 및 신뢰성 평가 
+재검증 요청 
+Correction Rate 
+기존 응답 오류를 얼마나 잘 수정했는지 평가 
+재검증 요청 
+
+=== PAGE 6 ===
+Cost per 1K 
+Tokens 
+1K token당 비용 
+비용 효율 분석 
+Token Efficiency 
+token 대비 성능 효율 
+Lightweight 우선 판단 
+Cost Efficiency 
+비용 대비 응답 품질 
+Routing 최적화 
+ 
++​ 동일 수준의 응답 품질이 예상되는 경우, Latency 및 Cost 효율이 높은 모델을 우선 
+선택한다. 
+ 
+9.3. 서비스 기능별 검증 기준 
+ 
+서비스 기능 
+우선 고려 
+요소 
+주요 검증 기준 
+핵심 지표 
+일반 FAQ 
+Latency 
+빠른 응답 및 기본 
+정확도 
+Accuracy, Latency 
+실시간 운영 
+챗봇 
+SLA 
+timeout 및 응답 안정성 
+p95 Latency, Timeout Rate 
+일반 업무 QA 
+Balanced 
+정확도 및 응답 품질 
+Accuracy, Latency, Human 
+Review 
+정책/규정 QA 
+Accuracy 
+근거 기반 정확도 
+Groundedness, Accuracy 
+보고서 생성 
+Reasoning 
+논리 흐름 및 응답 품질 Completeness, Output Quality, 
+Human Review 
+SQL/JSON 
+생성 
+Structured 
+Output 
+형식 안정성 및 실행 
+가능성 
+Parse Success, Format 
+Validation 
+문서 요약 
+Balanced 
+핵심 내용 유지 여부 
+Coverage, Summary Quality 
+RAG 기반 QA 
+Context 유지 
+문서 기반 응답 여부 
+Retrieval Hit Rate, 
+Groundedness 
+회의록 분석 
+Context 유지 
+긴 문맥 유지 및 정보 
+추출 
+Extraction Accuracy, Context 
+Validation 
+재검증 요청 
+Reliability 
+응답 신뢰성 및 
+correction 
+Reliability, Correction Rate 
+ 
+ 
+ 
+ 
+

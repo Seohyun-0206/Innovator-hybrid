@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vue-tsc *)",
+      "Bash(curl -s http://localhost:5173)",
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)",
+      "Bash(curl -s http://localhost:5176/src/pages/Login.vue)",
+      "Bash(pkill -f \"vite\")",
+      "Bash(curl -s http://localhost:5299/)",
+      "Bash(pkill -f \"vite --host 0.0.0.0 --mode development --port 5299\")",
+      "Bash(curl -s http://localhost:5299/src/styles/app.css)",
+      "Bash(curl -s http://localhost:5173/src/styles/app.css)",
+      "Read(//Users/dongwoo-yang/develop/llm-policy-gateway/**)",
+      "Bash(git -C /Users/dongwoo-yang/develop/llm-policy-gateway add .gitignore README.md dashboard-screenshot.png editable-policies-screenshot.png backend/ frontend/)"
+    ]
+  }
+}
