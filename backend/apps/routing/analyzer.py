@@ -32,6 +32,19 @@ STRUCTURED_OUTPUT_KEYWORDS = {
     "쿼리",
 }
 
+JSON_OUTPUT_KEYWORDS = {
+    "json",
+    "schema",
+    "structured",
+    "구조화",
+}
+
+SQL_OUTPUT_KEYWORDS = {
+    "sql",
+    "query",
+    "쿼리",
+}
+
 REASONING_KEYWORDS = {
     "분석",
     "비교",
@@ -53,6 +66,7 @@ class PromptAnalysis:
     requires_reasoning: bool
     estimated_tokens: int
     is_structured_output: bool = False
+    structured_output_type: str = ""
 
 
 class PromptAnalyzer:
@@ -61,11 +75,19 @@ class PromptAnalyzer:
         # 라우팅 판단에는 가벼운 근사치면 충분합니다. 비용 계산 정확도가 중요해지면
         # provider별 tokenizer로 교체할 수 있습니다.
         estimated_tokens = max(1, len(prompt) // 4)
+        wants_json = any(keyword in normalized for keyword in JSON_OUTPUT_KEYWORDS)
+        wants_sql = any(keyword in normalized for keyword in SQL_OUTPUT_KEYWORDS)
+        structured_output_type = ""
+        if wants_json and not wants_sql:
+            structured_output_type = "json"
+        elif wants_sql and not wants_json:
+            structured_output_type = "sql"
         return PromptAnalysis(
             has_sensitive_data=any(pattern.search(prompt) for pattern in SENSITIVE_PATTERNS),
             is_code=any(keyword in normalized for keyword in CODE_KEYWORDS),
-            is_structured_output=any(keyword in normalized for keyword in STRUCTURED_OUTPUT_KEYWORDS),
+            is_structured_output=wants_json or wants_sql,
             is_long_context=estimated_tokens > 3000,
             requires_reasoning=any(keyword in normalized for keyword in REASONING_KEYWORDS),
             estimated_tokens=estimated_tokens,
+            structured_output_type=structured_output_type,
         )

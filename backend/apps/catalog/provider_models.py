@@ -13,6 +13,8 @@ def fetch_provider_models(credential):
     headers = {"Authorization": f"Bearer {access_token}"}
     if provider == "gemini":
         headers = {"x-goog-api-key": access_token}
+    if provider == "anthropic":
+        headers = {"x-api-key": access_token, "anthropic-version": "2023-06-01"}
     if provider == "ollama":
         headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
         response = requests.get(f"{base_url}/api/tags", headers=headers, timeout=20)

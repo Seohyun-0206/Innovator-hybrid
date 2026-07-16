@@ -45,3 +45,11 @@ def get_openrouter_base_url() -> str:
 
 def get_openrouter_access_token() -> str:
     return get_provider_access_token("openrouter", settings.OPENROUTER_API_KEY)
+
+
+def get_anthropic_base_url() -> str:
+    return get_provider_base_url("anthropic", settings.ANTHROPIC_BASE_URL)
+
+
+def get_anthropic_access_token() -> str:
+    return get_provider_access_token("anthropic", settings.ANTHROPIC_API_KEY)

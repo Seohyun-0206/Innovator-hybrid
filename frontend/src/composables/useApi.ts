@@ -695,6 +695,41 @@ export type ServiceFeature = {
 
 export type ServiceFeaturePayload = Omit<ServiceFeature, 'id' | 'created_at' | 'updated_at'>
 
+export type GeneratedDataset = {
+  id: number
+  service_feature: number
+  service_feature_name: string
+  name: string
+  description: string
+  dataset_type: string
+  data_format: string
+  status: string
+  requested_question_count: number
+  question_count: number
+  generation_model: number | null
+  generation_model_label: string | null
+  few_shot_examples: string
+  generation_prompt: string
+  raw_content: string
+  error_message: string
+  metadata: Record<string, unknown>
+  created_by: number | null
+  created_by_username: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type GeneratedDatasetGeneratePayload = {
+  service_feature: number
+  generation_model: number
+  name: string
+  description: string
+  dataset_type: string
+  question_count: number
+  few_shot_examples: string
+  additional_instructions: string
+}
+
 export type TierRecommendation = {
   model_id: number
   provider: string
@@ -1145,6 +1180,19 @@ export function useApi() {
       }),
     deleteServiceFeature: (id: number) =>
       request<Record<string, never>>(`/api/service-features/${id}/`, { method: 'DELETE' }),
+    getGeneratedDatasets: () => request<GeneratedDataset[]>('/api/generated-datasets/'),
+    generateDataset: (payload: GeneratedDatasetGeneratePayload) =>
+      request<GeneratedDataset>('/api/generated-datasets/generate/', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    updateGeneratedDataset: (id: number, payload: Partial<GeneratedDataset>) =>
+      request<GeneratedDataset>(`/api/generated-datasets/${id}/`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }),
+    deleteGeneratedDataset: (id: number) =>
+      request<Record<string, never>>(`/api/generated-datasets/${id}/`, { method: 'DELETE' }),
     generatePolicyDraft: (payload: PolicyDraftGeneratePayload) =>
       request<PolicyDraft>('/api/policy-draft/generate/', {
         method: 'POST',

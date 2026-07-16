@@ -16,7 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const isEdit = computed(() => Boolean(props.model))
-const credentialProviders = ['ollama', 'openai', 'gemini', 'openrouter']
+const credentialProviders = ['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']
 const remoteCapableProviders = ['ollama']
 const usesCredential = computed(() => credentialProviders.includes(form.provider))
 const matchingCredentials = computed(() =>
@@ -133,7 +133,7 @@ const credentialIdStr = computed({
         <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Provider</span>
-            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter']" />
+            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']" />
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Role</span>

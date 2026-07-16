@@ -91,7 +91,7 @@ async function testConnection() {
         <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Provider</span>
-            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter']" />
+            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']" />
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">표시 이름</span>

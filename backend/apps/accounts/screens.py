@@ -3,6 +3,7 @@ DEFAULT_SCREENS = [
     {"id": "models", "label": "모델"},
     {"id": "credentials", "label": "인증 관리"},
     {"id": "evaluation-datasets", "label": "데이터셋 관리"},
+    {"id": "generated-datasets", "label": "생성 데이터셋"},
     {"id": "evaluation-methods", "label": "평가방식"},
     {"id": "evaluation-runs", "label": "평가 실행"},
     {"id": "model-evaluation", "label": "평가 결과"},

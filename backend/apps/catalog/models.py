@@ -8,6 +8,7 @@ class LLMModel(models.Model):
         ("openai", "OpenAI"),
         ("gemini", "Gemini"),
         ("openrouter", "OpenRouter"),
+        ("anthropic", "Anthropic"),
     ]
     ROLE_CHOICES = [
         ("general", "General"),
@@ -452,6 +453,7 @@ class ProviderCredential(models.Model):
         ("openai", "OpenAI"),
         ("gemini", "Gemini"),
         ("openrouter", "OpenRouter"),
+        ("anthropic", "Anthropic"),
     ]
 
     provider = models.CharField(max_length=32, choices=PROVIDER_CHOICES)
@@ -645,6 +647,57 @@ class ServiceFeature(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class GeneratedDataset(models.Model):
+    DATASET_TYPE_CHOICES = EvaluationDataset.DATASET_TYPE_CHOICES
+    DATA_FORMAT_CHOICES = EvaluationDataset.DATA_FORMAT_CHOICES
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("running", "Running"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+    ]
+
+    service_feature = models.OneToOneField(
+        ServiceFeature,
+        on_delete=models.CASCADE,
+        related_name="generated_dataset",
+    )
+    name = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    dataset_type = models.CharField(max_length=32, choices=DATASET_TYPE_CHOICES, default="multiple_choice")
+    data_format = models.CharField(max_length=32, choices=DATA_FORMAT_CHOICES, default="jsonl")
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="completed")
+    requested_question_count = models.PositiveIntegerField(default=0)
+    question_count = models.PositiveIntegerField(default=0)
+    generation_model = models.ForeignKey(
+        LLMModel,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generated_datasets",
+    )
+    few_shot_examples = models.TextField(blank=True)
+    generation_prompt = models.TextField(blank=True)
+    raw_content = models.TextField(blank=True)
+    error_message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generated_datasets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "name"]
+
+    def __str__(self):
+        return f"{self.service_feature.name} generated dataset"
 
 
 class PolicyDraft(models.Model):

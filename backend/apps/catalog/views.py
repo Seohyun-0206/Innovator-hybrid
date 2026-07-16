@@ -1,7 +1,11 @@
+import json
+import re
+import threading
 import time
 
 import requests
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 from rest_framework import generics, serializers, status
 from rest_framework.response import Response
@@ -20,6 +24,7 @@ from apps.catalog.models import (
     EvaluationMethod,
     EvaluationResult,
     EvaluationRun,
+    GeneratedDataset,
     LLMModel,
     ModelHealthEvent,
     ModelHealthOverride,
@@ -40,6 +45,7 @@ from apps.catalog.serializers import (
     EvaluationMethodSerializer,
     EvaluationResultSerializer,
     EvaluationRunSerializer,
+    GeneratedDatasetSerializer,
     LLMModelSerializer,
     ModelHealthEventSerializer,
     ModelHealthOverrideSerializer,
@@ -54,6 +60,7 @@ from apps.catalog.serializers import (
     ThresholdRuleSerializer,
     UsageQuotaSerializer,
 )
+from apps.providers.registry import ProviderRegistry
 
 
 class AuditCrudMixin:
@@ -614,7 +621,7 @@ class ProviderCredentialDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class ProviderCredentialTestSerializer(serializers.Serializer):
-    provider = serializers.ChoiceField(choices=["ollama", "openai", "gemini", "openrouter"])
+    provider = serializers.ChoiceField(choices=["ollama", "openai", "gemini", "openrouter", "anthropic"])
     base_url = serializers.CharField()
     access_token = serializers.CharField(allow_blank=True, required=False)
 
@@ -665,6 +672,12 @@ class ProviderCredentialTestView(APIView):
             return requests.get(
                 f"{base_url}/models",
                 headers={"x-goog-api-key": access_token},
+                timeout=15,
+            )
+        if provider == "anthropic":
+            return requests.get(
+                f"{base_url}/models",
+                headers={"x-api-key": access_token, "anthropic-version": "2023-06-01"},
                 timeout=15,
             )
         return requests.get(
@@ -797,6 +810,256 @@ class ServiceFeatureDetailView(AuditCrudMixin, generics.RetrieveUpdateDestroyAPI
     permission_classes = [HasScreenAccess]
     required_screen = "service-features"
     audit_resource_type = "service_feature"
+
+
+class GeneratedDatasetListView(generics.ListAPIView):
+    queryset = GeneratedDataset.objects.select_related("service_feature", "generation_model", "created_by").all()
+    serializer_class = GeneratedDatasetSerializer
+    permission_classes = [HasScreenAccess]
+    required_screen = "generated-datasets"
+
+
+class GeneratedDatasetDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = GeneratedDataset.objects.select_related("service_feature", "generation_model", "created_by").all()
+    serializer_class = GeneratedDatasetSerializer
+    permission_classes = [HasScreenAccess]
+    required_screen = "generated-datasets"
+
+
+class GeneratedDatasetGenerateSerializer(serializers.Serializer):
+    service_feature = serializers.PrimaryKeyRelatedField(queryset=ServiceFeature.objects.filter(is_active=True))
+    generation_model = serializers.PrimaryKeyRelatedField(
+        queryset=LLMModel.objects.select_related("provider_credential").filter(is_active=True)
+    )
+    name = serializers.CharField(max_length=160)
+    description = serializers.CharField(allow_blank=True, required=False)
+    dataset_type = serializers.ChoiceField(
+        choices=["multiple_choice", "qa", "generation", "rag", "safety_classification", "custom"]
+    )
+    question_count = serializers.IntegerField(min_value=1, max_value=1000)
+    few_shot_examples = serializers.CharField(allow_blank=True, required=False)
+    additional_instructions = serializers.CharField(allow_blank=True, required=False)
+
+
+class GeneratedDatasetGenerateView(APIView):
+    permission_classes = [HasScreenAccess]
+    required_screen = "service-features"
+    provider_registry = ProviderRegistry()
+
+    def post(self, request):
+        serializer = GeneratedDatasetGenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        service_feature = data["service_feature"]
+        model = data["generation_model"]
+        prompt = self.build_prompt(data, count=data["question_count"])
+
+        generated, _ = GeneratedDataset.objects.update_or_create(
+            service_feature=service_feature,
+            defaults={
+                "name": data["name"],
+                "description": data.get("description", ""),
+                "dataset_type": data["dataset_type"],
+                "data_format": "jsonl",
+                "status": "pending",
+                "requested_question_count": data["question_count"],
+                "question_count": 0,
+                "generation_model": model,
+                "few_shot_examples": data.get("few_shot_examples", ""),
+                "generation_prompt": prompt,
+                "raw_content": "",
+                "error_message": "",
+                "metadata": {
+                    "requested_question_count": data["question_count"],
+                    "additional_instructions": data.get("additional_instructions", ""),
+                    "batch_size": self.get_batch_size(data["question_count"]),
+                },
+                "created_by": request.user,
+            },
+        )
+        record_audit_log(
+            request=request,
+            action="generated_dataset.generate",
+            resource_type="generated_dataset",
+            resource_id=generated.id,
+            resource_name=generated.name,
+            metadata={
+                "service_feature_id": service_feature.id,
+                "model": f"{model.provider}/{model.name}",
+                "requested_question_count": generated.requested_question_count,
+            },
+        )
+        self.start_background_generation(generated.id, data)
+        return Response(GeneratedDatasetSerializer(generated).data, status=status.HTTP_202_ACCEPTED)
+
+    def start_background_generation(self, generated_id, data):
+        payload = {
+            "service_feature_id": data["service_feature"].id,
+            "generation_model_id": data["generation_model"].id,
+            "dataset_type": data["dataset_type"],
+            "question_count": data["question_count"],
+            "few_shot_examples": data.get("few_shot_examples", ""),
+            "additional_instructions": data.get("additional_instructions", ""),
+        }
+        thread = threading.Thread(
+            target=self.run_generation_job,
+            args=(generated_id, payload),
+            daemon=True,
+        )
+        thread.start()
+
+    def run_generation_job(self, generated_id, payload):
+        close_old_connections()
+        try:
+            generated = GeneratedDataset.objects.select_related("service_feature", "generation_model__provider_credential").get(
+                id=generated_id
+            )
+            generated.status = "running"
+            generated.save(update_fields=["status", "updated_at"])
+
+            service_feature = generated.service_feature
+            model = generated.generation_model
+            if model is None:
+                raise ValueError("Generation model is no longer available.")
+
+            provider = ProviderRegistry().get(model.provider, credential=model.provider_credential)
+            requested_count = payload["question_count"]
+            batch_size = self.get_batch_size(requested_count)
+            lines = []
+
+            while len(lines) < requested_count:
+                remaining = requested_count - len(lines)
+                current_batch_size = min(batch_size, remaining)
+                batch_content, batch_prompt = self.generate_batch(
+                    provider=provider,
+                    model=model,
+                    payload=payload,
+                    service_feature=service_feature,
+                    batch_size=current_batch_size,
+                    offset=len(lines),
+                )
+                for line in batch_content.splitlines():
+                    if line.strip() and len(lines) < requested_count:
+                        lines.append(line.strip())
+                generated.raw_content = "\n".join(lines)
+                generated.question_count = len(lines)
+                generated.generation_prompt = batch_prompt
+                generated.status = "running"
+                generated.save(update_fields=["raw_content", "question_count", "generation_prompt", "status", "updated_at"])
+
+            generated.raw_content = "\n".join(lines[:requested_count])
+            generated.question_count = min(len(lines), requested_count)
+            generated.status = "completed"
+            generated.error_message = ""
+            generated.save(update_fields=["raw_content", "question_count", "status", "error_message", "updated_at"])
+        except Exception as exc:
+            GeneratedDataset.objects.filter(id=generated_id).update(
+                status="failed",
+                error_message=str(exc),
+                updated_at=timezone.now(),
+            )
+        finally:
+            close_old_connections()
+
+    def generate_batch(self, *, provider, model, payload, service_feature, batch_size, offset):
+        last_error = None
+        for attempt in range(3):
+            batch_payload = {
+                **payload,
+                "service_feature": service_feature,
+                "generation_model": model,
+                "question_count": batch_size,
+            }
+            prompt = self.build_prompt(
+                batch_payload,
+                count=batch_size,
+                offset=offset,
+                attempt=attempt + 1,
+            )
+            try:
+                llm_response = provider.chat(
+                    model=model.name,
+                    messages=[{"role": "user", "content": prompt}],
+                    options=self.provider_options(model.provider),
+                )
+                batch_content = self.normalize_jsonl(llm_response.text)
+                if self.count_lines(batch_content) > 0:
+                    return batch_content, prompt
+                last_error = "Model returned no valid JSONL lines."
+            except Exception as exc:
+                last_error = str(exc)
+        raise ValueError(f"Batch {offset + 1}-{offset + batch_size} failed after retries: {last_error}")
+
+    def get_batch_size(self, requested_count):
+        if requested_count <= 10:
+            return requested_count
+        return 10
+
+    def provider_options(self, provider_name):
+        if provider_name == "openai":
+            return {"temperature": 0.4, "max_output_tokens": 5000}
+        if provider_name == "gemini":
+            return {"temperature": 0.4, "maxOutputTokens": 5000}
+        return {"temperature": 0.4, "max_tokens": 5000}
+
+    def build_prompt(self, data, *, count, offset=0, attempt=1):
+        service_feature = data["service_feature"]
+        few_shot = data.get("few_shot_examples", "").strip()
+        instructions = data.get("additional_instructions", "").strip()
+        return "\n".join(
+            [
+                "Create an evaluation dataset as JSONL. Return only JSONL lines, no markdown.",
+                f"Service feature id: {service_feature.id}",
+                f"Service feature name: {service_feature.name}",
+                f"Service description: {service_feature.description or '-'}",
+                f"Dataset type: {data['dataset_type']}",
+                f"Number of questions in this batch: {count}",
+                f"Start item index: {offset + 1}",
+                "Each line must be one JSON object.",
+                "Do not wrap the result in markdown fences.",
+                "Do not include explanations, numbering, commas between lines, or a surrounding JSON array.",
+                "Escape any quote characters inside JSON strings.",
+                "If unsure, make shorter questions and shorter choices rather than long text.",
+                "For multiple_choice use fields: question, choices, answer, subject, category.",
+                "For non-multiple-choice use fields: question, answer, subject, category.",
+                "Keep the data realistic and directly aligned to the service feature.",
+                f"Retry attempt: {attempt}. Prioritize valid JSONL over variety.",
+                f"Few-shot examples:\n{few_shot}" if few_shot else "Few-shot examples: none",
+                f"Additional instructions:\n{instructions}" if instructions else "Additional instructions: none",
+            ]
+        )
+
+    def normalize_jsonl(self, text):
+        cleaned = text.strip()
+        fenced = re.search(r"```(?:jsonl|json)?\s*(.*?)```", cleaned, re.DOTALL | re.IGNORECASE)
+        if fenced:
+            cleaned = fenced.group(1).strip()
+        try:
+            payload = json.loads(cleaned)
+            if isinstance(payload, list):
+                return "\n".join(json.dumps(item, ensure_ascii=False) for item in payload if isinstance(item, dict))
+            if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+                return "\n".join(json.dumps(item, ensure_ascii=False) for item in payload["items"] if isinstance(item, dict))
+        except ValueError:
+            pass
+
+        valid_lines = []
+        invalid_lines = []
+        for line in cleaned.splitlines():
+            stripped = line.strip().rstrip(",")
+            if not stripped:
+                continue
+            try:
+                json.loads(stripped)
+                valid_lines.append(stripped)
+            except ValueError:
+                invalid_lines.append(stripped[:200])
+        if not valid_lines and invalid_lines:
+            raise ValueError(f"Model did not return valid JSONL. First invalid line: {invalid_lines[0]}")
+        return "\n".join(valid_lines)
+
+    def count_lines(self, raw_content):
+        return len([line for line in raw_content.splitlines() if line.strip()])
 
 
 class TierRecommendationView(APIView):

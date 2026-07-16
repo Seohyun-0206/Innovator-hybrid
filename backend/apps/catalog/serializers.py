@@ -8,6 +8,7 @@ from apps.catalog.models import (
     EvaluationMethod,
     EvaluationResult,
     EvaluationRun,
+    GeneratedDataset,
     LLMModel,
     ModelHealthEvent,
     ModelHealthOverride,
@@ -152,6 +153,44 @@ class EvaluationDatasetSerializer(serializers.ModelSerializer):
         if not raw_content:
             return 0
         return len([line for line in raw_content.splitlines() if line.strip()])
+
+
+class GeneratedDatasetSerializer(serializers.ModelSerializer):
+    service_feature_name = serializers.CharField(source="service_feature.name", read_only=True)
+    generation_model_label = serializers.SerializerMethodField()
+    created_by_username = serializers.CharField(source="created_by.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = GeneratedDataset
+        fields = [
+            "id",
+            "service_feature",
+            "service_feature_name",
+            "name",
+            "description",
+            "dataset_type",
+            "data_format",
+            "status",
+            "requested_question_count",
+            "question_count",
+            "generation_model",
+            "generation_model_label",
+            "few_shot_examples",
+            "generation_prompt",
+            "raw_content",
+            "error_message",
+            "metadata",
+            "created_by",
+            "created_by_username",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_by", "question_count"]
+
+    def get_generation_model_label(self, instance):
+        if not instance.generation_model:
+            return None
+        return f"{instance.generation_model.provider}/{instance.generation_model.name}"
 
 
 class EvaluationMethodSerializer(serializers.ModelSerializer):

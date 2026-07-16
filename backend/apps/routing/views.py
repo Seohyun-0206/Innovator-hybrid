@@ -430,6 +430,12 @@ def get_matching_validation_rules(analysis):
     rules = []
     for rule in ResponseValidationRule.objects.filter(is_active=True):
         if routing_rule_matches(rule.condition_key, analysis):
+            if (
+                rule.condition_key == "structured_output"
+                and getattr(analysis, "structured_output_type", "")
+                and rule.validation_type != analysis.structured_output_type
+            ):
+                continue
             rules.append(rule)
     return rules
 

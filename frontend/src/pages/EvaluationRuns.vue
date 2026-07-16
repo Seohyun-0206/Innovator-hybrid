@@ -102,6 +102,7 @@ const providerLabels: Record<string, string> = {
   openai: 'OpenAI',
   gemini: 'Gemini',
   openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
 }
 
 const datasetOptions = computed<SelectOption[]>(() =>

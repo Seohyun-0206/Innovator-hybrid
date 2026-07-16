@@ -5,9 +5,12 @@ import Models from './pages/Models.vue'
 import Policies from './pages/Policies.vue'
 import ThresholdRules from './pages/ThresholdRules.vue'
 import ProviderCredentials from './pages/ProviderCredentials.vue'
+import Playground from './pages/Playground.vue'
+import RoutingLogs from './pages/RoutingLogs.vue'
 import Users from './pages/Users.vue'
 import ModelEvaluation from './pages/ModelEvaluation.vue'
 import EvaluationDatasets from './pages/EvaluationDatasets.vue'
+import GeneratedDatasets from './pages/GeneratedDatasets.vue'
 import EvaluationMethods from './pages/EvaluationMethods.vue'
 import EvaluationRuns from './pages/EvaluationRuns.vue'
 import EvaluationItemResults from './pages/EvaluationItemResults.vue'
@@ -45,10 +48,13 @@ const tabs = [
   { id: 'evaluation-artifacts', label: '산출물', component: EvaluationArtifacts, group: 'experiments', icon: ArchiveIcon },
   { id: 'models', label: '모델', component: Models, group: 'resources', icon: CpuIcon },
   { id: 'evaluation-datasets', label: '데이터셋', component: EvaluationDatasets, group: 'resources', icon: DatabaseIcon },
+  { id: 'generated-datasets', label: '생성 데이터셋', component: GeneratedDatasets, group: 'resources', icon: DatabaseIcon },
   { id: 'evaluation-methods', label: '평가방식', component: EvaluationMethods, group: 'resources', icon: ClipboardListIcon },
   { id: 'service-features', label: '정책 설계', component: ServiceFeatureMapping, group: 'policy-design', icon: LayersIcon },
+  { id: 'playground', label: '테스트', component: Playground, group: 'policy-design', icon: BotIcon },
   { id: 'policies', label: '라우팅 정책', component: Policies, group: 'policy-design', icon: RouteIcon },
   { id: 'threshold-rules', label: 'SLA/검증 기준', component: ThresholdRules, group: 'policy-design', icon: SlidersHorizontalIcon },
+  { id: 'logs', label: '라우팅 로그', component: RoutingLogs, group: 'policy-design', icon: FileSearchIcon },
   { id: 'users', label: '사용자/권한', component: Users, group: 'admin', icon: UsersIcon },
   { id: 'credentials', label: '인증/보안', component: ProviderCredentials, group: 'admin', icon: KeyRoundIcon }
 ] as const

@@ -1,3 +1,4 @@
+from apps.providers.anthropic import AnthropicProvider
 from apps.providers.gemini import GeminiProvider
 from apps.providers.ollama import OllamaProvider
 from apps.providers.openai import OpenAIProvider
@@ -11,6 +12,7 @@ class ProviderRegistry:
             "openai": OpenAIProvider,
             "gemini": GeminiProvider,
             "openrouter": OpenRouterProvider,
+            "anthropic": AnthropicProvider,
         }
         self._providers = {}
 

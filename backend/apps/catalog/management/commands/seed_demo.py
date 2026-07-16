@@ -14,8 +14,11 @@ from apps.catalog.models import (
     EvaluationMethod,
     EvaluationResult,
     EvaluationRun,
+    GeneratedDataset,
     LLMModel,
+    ProviderCredential,
     RoutingPolicy,
+    ServiceFeature,
 )
 
 
@@ -130,6 +133,7 @@ class Command(BaseCommand):
                 name=payload["name"],
                 defaults=payload,
             )
+        self.seed_vllm_from_env()
 
         policies = [
             ("cost-first", "Cost First", "Prefer low-cost and fast local models."),
@@ -150,8 +154,101 @@ class Command(BaseCommand):
             )
 
         imported_results = self.seed_mmlu_experiment()
+        generated_datasets = self.seed_generated_datasets()
         self.stdout.write(self.style.SUCCESS(
-            f"Seeded demo models, policies, and {imported_results} imported MMLU results."))
+            f"Seeded demo models, policies, {imported_results} imported MMLU results, and {generated_datasets} generated datasets."))
+
+    def seed_vllm_from_env(self):
+        base_url = self.env_value("VLLM_BASE_URL", "vllm_base_url")
+        model_name = self.env_value("VLLM_MODEL", "vllm_model")
+        api_key = self.env_value("VLLM_KEY", "vllm_key")
+        if not base_url or not model_name:
+            return None
+
+        credential, _ = ProviderCredential.objects.update_or_create(
+            provider="openrouter",
+            display_name="vLLM OpenAI-compatible",
+            defaults={"is_active": True},
+        )
+        credential.base_url = base_url.rstrip("/")
+        credential.access_token = api_key or "dummy"
+        credential.is_active = True
+        credential.save()
+
+        model, _ = LLMModel.objects.update_or_create(
+            provider="openrouter",
+            name=model_name,
+            defaults={
+                "display_name": f"vLLM {model_name}",
+                "model_tier": "standard",
+                "provider_credential": credential,
+                "role": "general",
+                "quality_level": 3,
+                "speed_level": 4,
+                "cost_level": 1,
+                "privacy_level": "external",
+                "context_window": 262144,
+                "input_token_price_per_1m": 0,
+                "output_token_price_per_1m": 0,
+                "average_latency_ms": 1000,
+                "timeout_seconds": 120,
+                "is_active": True,
+            },
+        )
+        if model.provider_credential_id != credential.id:
+            model.provider_credential = credential
+            model.save(update_fields=["provider_credential", "updated_at"])
+        return model
+
+    def env_value(self, *names):
+        import os
+
+        for name in names:
+            if os.environ.get(name):
+                return os.environ[name]
+        env_path = Path(__file__).resolve().parents[5] / ".env"
+        if not env_path.exists():
+            return ""
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            if key.strip() in names:
+                return value.strip().strip('"').strip("'")
+        return ""
+
+    def seed_generated_datasets(self):
+        fixture_root = Path(__file__).resolve().parents[4] / "fixtures" / "generated_datasets"
+        fixture_path = fixture_root / "general_faq_1000.json"
+        if not fixture_path.exists():
+            return 0
+        payload = self.read_json(fixture_path)
+        feature = ServiceFeature.objects.filter(name=payload["service_feature_name"]).first()
+        model = LLMModel.objects.filter(provider=payload.get("model_provider", ""), name=payload.get("model_name", "")).first()
+        if not feature:
+            self.stdout.write(self.style.WARNING("Generated dataset fixture skipped; service feature was not found."))
+            return 0
+        raw_content = payload.get("raw_content", "")
+        generated, _ = GeneratedDataset.objects.update_or_create(
+            service_feature=feature,
+            defaults={
+                "name": payload.get("name") or f"{feature.name} 생성 데이터셋",
+                "description": payload.get("description", ""),
+                "dataset_type": payload.get("dataset_type", "multiple_choice"),
+                "data_format": payload.get("data_format", "jsonl"),
+                "status": payload.get("status", "completed"),
+                "requested_question_count": int(payload.get("requested_question_count") or 0),
+                "question_count": int(payload.get("question_count") or len([line for line in raw_content.splitlines() if line.strip()])),
+                "generation_model": model,
+                "few_shot_examples": payload.get("few_shot_examples", ""),
+                "generation_prompt": payload.get("generation_prompt", ""),
+                "raw_content": raw_content,
+                "error_message": "",
+                "metadata": payload.get("metadata", {}),
+            },
+        )
+        return 1 if generated else 0
 
     def seed_mmlu_experiment(self) -> int:
         fixture_root = Path(__file__).resolve().parents[4] / "fixtures" / "imported_mmlu"

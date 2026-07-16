@@ -1,5 +1,6 @@
 import pytest
 
+from apps.providers.anthropic import AnthropicProvider
 from apps.providers.gemini import GeminiProvider
 from apps.providers.openai import OpenAIProvider
 from apps.providers.openrouter import OpenRouterProvider
@@ -120,6 +121,40 @@ def test_openrouter_provider_extracts_chat_completion_text(monkeypatch):
     assert captured["json"]["temperature"] == 0.2
 
 
+def test_anthropic_provider_extracts_message_text(monkeypatch):
+    captured = {}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse(
+            {
+                "content": [
+                    {"type": "text", "text": "hello "},
+                    {"type": "text", "text": "from anthropic"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("apps.providers.anthropic.requests.post", fake_post)
+
+    response = AnthropicProvider(api_key="anthropic-token").chat(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "hello"}],
+        options={"temperature": 0.2},
+    )
+
+    assert response.text == "hello from anthropic"
+    assert captured["url"] == "https://api.anthropic.com/v1/messages"
+    assert captured["headers"]["x-api-key"] == "anthropic-token"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert captured["json"]["model"] == "claude-haiku-4-5-20251001"
+    assert captured["json"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert captured["json"]["temperature"] == 0.2
+
+
 def test_external_providers_require_api_key():
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         OpenAIProvider(api_key="")
@@ -129,3 +164,6 @@ def test_external_providers_require_api_key():
 
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         OpenRouterProvider(api_key="")
+
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        AnthropicProvider(api_key="")

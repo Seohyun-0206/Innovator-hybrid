@@ -1,8 +1,10 @@
 from decimal import Decimal
 
 from apps.catalog.entities import LLMModelCandidate
+from apps.catalog.models import ResponseValidationRule
 from apps.routing.analyzer import PromptAnalysis
 from apps.routing.policy_engine import PolicyEngine
+from apps.routing.views import get_matching_validation_rules
 
 
 def test_privacy_first_routes_to_local_model_when_sensitive_data_is_detected():
@@ -196,3 +198,46 @@ def test_policy_rule_builder_budget_can_fallback_to_local_models():
 
     assert result.selected.name == "local-general"
     assert "budget exceeded" in result.reason
+
+
+def test_structured_validation_uses_detected_output_type(db):
+    ResponseValidationRule.objects.create(
+        rule_id="json-only",
+        name="JSON",
+        condition_key="structured_output",
+        validation_type="json",
+        priority=10,
+    )
+    ResponseValidationRule.objects.create(
+        rule_id="sql-only",
+        name="SQL",
+        condition_key="structured_output",
+        validation_type="sql",
+        priority=20,
+    )
+
+    json_rules = get_matching_validation_rules(
+        PromptAnalysis(
+            has_sensitive_data=False,
+            is_code=False,
+            is_long_context=False,
+            requires_reasoning=False,
+            estimated_tokens=20,
+            is_structured_output=True,
+            structured_output_type="json",
+        )
+    )
+    sql_rules = get_matching_validation_rules(
+        PromptAnalysis(
+            has_sensitive_data=False,
+            is_code=True,
+            is_long_context=False,
+            requires_reasoning=False,
+            estimated_tokens=20,
+            is_structured_output=True,
+            structured_output_type="sql",
+        )
+    )
+
+    assert {rule.validation_type for rule in json_rules if rule.condition_key == "structured_output"} == {"json"}
+    assert {rule.validation_type for rule in sql_rules if rule.condition_key == "structured_output"} == {"sql"}
