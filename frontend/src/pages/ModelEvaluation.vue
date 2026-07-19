@@ -44,9 +44,12 @@ const selectedRunResults = computed(() => {
   return runResults.filter(
     (result) =>
       !query ||
-      result.model_display_name.toLowerCase().includes(query) ||
-      result.model_name.toLowerCase().includes(query) ||
-      result.model_provider.toLowerCase().includes(query) ||
+      (result.model_display_name ?? '').toLowerCase().includes(query) ||
+      (result.model_name ?? '').toLowerCase().includes(query) ||
+      (result.model_provider ?? '').toLowerCase().includes(query) ||
+      result.candidate_label.toLowerCase().includes(query) ||
+      (result.routing_config?.small_model_display_name ?? '').toLowerCase().includes(query) ||
+      (result.routing_config?.large_model_display_name ?? '').toLowerCase().includes(query) ||
       result.status.toLowerCase().includes(query)
   )
 })
@@ -127,6 +130,7 @@ const scorecardMetricKeys = computed(() => {
 })
 
 const hasScorecardMetrics = computed(() => scorecardMetricKeys.value.length > 0)
+const hasRoutingResults = computed(() => selectedRunResults.value.some((result) => result.result_type === 'routing'))
 
 const metricColumns = computed<MetricColumn[]>(() => {
   const columns: MetricColumn[] = [
@@ -134,6 +138,11 @@ const metricColumns = computed<MetricColumn[]>(() => {
     { key: 'latency', label: '지연 p50/p95', getValue: (result) => `${formatMs(result.latency_p50_ms)} / ${formatMs(result.latency_p95_ms)}` },
     { key: 'tokens', label: '토큰/비용', getValue: (result) => `${formatCompactNumber((result.input_tokens || 0) + (result.output_tokens || 0))} tok · ${formatCost(result.estimated_cost_usd)}` },
     { key: 'failure', label: '실패율', getValue: (result) => formatPercent(result.failure_rate) },
+    { key: 'ttft', label: 'TTFT p50/p95', getValue: (result) => `${formatMs(result.ttft_p50_ms)} / ${formatMs(result.ttft_p95_ms)}` },
+    { key: 'tpot', label: 'TPOT p50/p95', getValue: (result) => `${formatDecimalMs(result.tpot_p50_ms)} / ${formatDecimalMs(result.tpot_p95_ms)}` },
+    { key: 'throughput', label: 'Throughput p50/p95', getValue: (result) => `${formatTps(result.throughput_p50_tps)} / ${formatTps(result.throughput_p95_tps)}` },
+    { key: 'system_throughput', label: 'System Throughput', getValue: (result) => formatTps(result.system_throughput_tps) },
+    { key: 'kv_cache', label: 'KV Cache 사용률', getValue: (result) => formatKvCache(result.kv_cache_usage_avg) },
   ]
 
   if (isMultipleChoiceRun.value) {
@@ -240,6 +249,27 @@ function formatMs(value: number | null) {
   return value === null ? '-' : `${value}ms`
 }
 
+function formatDecimalMs(value: string | null) {
+  if (value === null) return '-'
+  return `${Number(value).toFixed(1)}ms`
+}
+
+function formatTps(value: string | null) {
+  if (value === null) return '-'
+  return `${Number(value).toFixed(1)} tok/s`
+}
+
+function formatKvCache(value: string | null) {
+  if (value === null) return '-'
+  return `${(Number(value) * 100).toFixed(1)}%`
+}
+
+function formatRouterLatency(result: EvaluationResult) {
+  if (result.result_type !== 'routing') return '-'
+  if (result.router_latency_p50_ms === null && result.router_latency_p95_ms === null) return '-'
+  return `${formatMs(result.router_latency_p50_ms)} / ${formatMs(result.router_latency_p95_ms)}`
+}
+
 function formatMetricLabel(key: string) {
   return key
     .replace(/_/g, ' ')
@@ -251,6 +281,26 @@ function formatUnknownMetric(value: unknown) {
   if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(3)
   if (typeof value === 'string') return value
   return '-'
+}
+
+function resultTypeLabel(result: EvaluationResult) {
+  return result.result_type === 'routing' ? '라우팅' : '단일 모델'
+}
+
+function resultTypeClass(result: EvaluationResult) {
+  return result.result_type === 'routing' ? 'badge-primary' : 'badge-muted'
+}
+
+function resultDisplayName(result: EvaluationResult | null | undefined) {
+  if (!result) return '-'
+  return result.result_type === 'routing' ? result.candidate_label : result.model_display_name ?? '-'
+}
+
+function formatRoutingDistribution(result: EvaluationResult) {
+  const small = result.routing_model_distribution?.small
+  const large = result.routing_model_distribution?.large
+  if (!small && !large) return '-'
+  return `Small ${small?.percent ?? 0}% · Large ${large?.percent ?? 0}%`
 }
 
 function getRole(result: EvaluationResult) {
@@ -429,12 +479,12 @@ onMounted(loadPageData)
       </div>
       <div class="section-card-padded">
         <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">가장 빠른 모델</p>
-        <p class="text-lg font-semibold text-zinc-100">{{ fastestResult?.model_display_name ?? '-' }}</p>
+        <p class="text-lg font-semibold text-zinc-100">{{ resultDisplayName(fastestResult) }}</p>
         <p class="mt-1 text-sm text-zinc-500">p95 {{ fastestResult?.latency_p95_ms ?? '-' }}ms · 실패 {{ formatPercent(fastestResult?.failure_rate ?? null) }}</p>
       </div>
       <div class="section-card-padded">
         <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">가장 안정적인 모델</p>
-        <p class="text-lg font-semibold text-zinc-100">{{ mostReliableResult?.model_display_name ?? '-' }}</p>
+        <p class="text-lg font-semibold text-zinc-100">{{ resultDisplayName(mostReliableResult) }}</p>
         <p class="mt-1 text-sm text-zinc-500">실패 {{ formatPercent(mostReliableResult?.failure_rate ?? null) }} · 정확도 {{ formatPercent(mostReliableResult?.overall_accuracy ?? null) }}</p>
       </div>
     </section>
@@ -470,12 +520,12 @@ onMounted(loadPageData)
       <div class="mt-4 grid gap-4 md:grid-cols-3">
         <div class="rounded-lg border border-indigo-500/20 bg-zinc-950/30 p-4">
           <p class="text-xs font-semibold uppercase tracking-widest text-indigo-300">Fast Path 참고</p>
-          <p class="mt-2 text-sm font-semibold text-zinc-100">{{ fastestResult?.model_display_name ?? '-' }}</p>
+          <p class="mt-2 text-sm font-semibold text-zinc-100">{{ resultDisplayName(fastestResult) }}</p>
           <p class="mt-1 text-xs text-zinc-500">낮은 p95 지연과 허용 가능한 실패율을 볼 때 참고합니다.</p>
         </div>
         <div class="rounded-lg border border-indigo-500/20 bg-zinc-950/30 p-4">
           <p class="text-xs font-semibold uppercase tracking-widest text-indigo-300">Accurate Path 참고</p>
-          <p class="mt-2 text-sm font-semibold text-zinc-100">{{ mostAccurateResult?.model_display_name ?? '-' }}</p>
+          <p class="mt-2 text-sm font-semibold text-zinc-100">{{ resultDisplayName(mostAccurateResult) }}</p>
           <p class="mt-1 text-xs text-zinc-500">정확도 metric이 있는 평가에서만 의미 있게 해석합니다.</p>
         </div>
         <div class="rounded-lg border border-indigo-500/20 bg-zinc-950/30 p-4">
@@ -501,11 +551,14 @@ onMounted(loadPageData)
     <AdminDataTable :loading="loading" :is-empty="selectedRunResults.length === 0">
       <template #head>
         <th class="table-th">모델</th>
+        <th class="table-th">유형</th>
         <th class="table-th">Provider</th>
         <th class="table-th">상태</th>
         <th v-for="column in metricColumns" :key="column.key" class="table-th">
           {{ column.label }}
         </th>
+        <th v-if="hasRoutingResults" class="table-th">Routing 분포</th>
+        <th v-if="hasRoutingResults" class="table-th">Router Latency p50/p95</th>
         <th class="table-th">문항/로그</th>
         <th v-if="hasScorecardMetrics" class="table-th">Scorecard 역할</th>
       </template>
@@ -518,15 +571,31 @@ onMounted(loadPageData)
 
       <tr v-for="result in selectedRunResults" :key="result.id" class="table-row">
         <td class="px-5 py-3.5">
-          <p class="font-medium text-zinc-200">{{ result.model_display_name }}</p>
-          <p class="text-xs text-zinc-500">{{ result.model_name }}</p>
+          <p class="font-medium text-zinc-200">{{ result.result_type === 'routing' ? result.candidate_label : result.model_display_name }}</p>
+          <p class="text-xs text-zinc-500">
+            <template v-if="result.result_type === 'routing'">
+              Small: {{ result.routing_config?.small_model_display_name ?? '-' }} / Large: {{ result.routing_config?.large_model_display_name ?? '-' }}
+            </template>
+            <template v-else>{{ result.model_name }}</template>
+          </p>
         </td>
-        <td class="whitespace-nowrap px-5 py-3.5 text-sm capitalize text-zinc-300">{{ result.model_provider }}</td>
+        <td class="whitespace-nowrap px-5 py-3.5">
+          <span :class="['badge', resultTypeClass(result)]">{{ resultTypeLabel(result) }}</span>
+        </td>
+        <td class="whitespace-nowrap px-5 py-3.5 text-sm capitalize text-zinc-300">
+          {{ result.result_type === 'routing' ? '-' : result.model_provider }}
+        </td>
         <td class="whitespace-nowrap px-5 py-3.5">
           <span :class="['badge', statusClass(result.status)]">{{ getStatusLabel(result.status) }}</span>
         </td>
         <td v-for="column in metricColumns" :key="`${result.id}-${column.key}`" class="whitespace-nowrap px-5 py-3.5 text-sm text-zinc-300">
           {{ column.getValue(result) }}
+        </td>
+        <td v-if="hasRoutingResults" class="whitespace-nowrap px-5 py-3.5 text-sm text-zinc-300">
+          {{ result.result_type === 'routing' ? formatRoutingDistribution(result) : '-' }}
+        </td>
+        <td v-if="hasRoutingResults" class="whitespace-nowrap px-5 py-3.5 text-sm text-zinc-300">
+          {{ formatRouterLatency(result) }}
         </td>
         <td class="whitespace-nowrap px-5 py-3.5 text-sm text-zinc-300">
           <p>{{ result.item_result_count || 0 }}개</p>

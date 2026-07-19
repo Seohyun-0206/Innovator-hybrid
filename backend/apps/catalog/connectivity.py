@@ -6,7 +6,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from apps.catalog.credentials import get_provider_access_token, get_provider_base_url
-from apps.catalog.models import LLMModel
+from apps.catalog.models import EvaluationRoutingCandidate, LLMModel
 from apps.catalog.provider_models import parse_provider_models
 
 
@@ -81,6 +81,23 @@ def fetch_provider_catalog(model: LLMModel) -> dict:
             "message": str(exc),
             "base_url": base_url,
         }
+
+
+def collect_run_models(run) -> list[LLMModel]:
+    """run에 실제로 연관된 모든 모델을 모읍니다. 단일 모델 후보(run.models)뿐 아니라
+    라우팅 후보의 Small/Large 모델도 포함해야 실행/가용성 검사가 라우팅 전용 run에서도
+    올바르게 동작합니다(단일 후보가 하나도 없는 라우팅 전용 run은 run.models가 비어있음)."""
+    models: dict[int, LLMModel] = {
+        model.id: model for model in run.models.select_related("provider_credential").all()
+    }
+    routing_candidates = EvaluationRoutingCandidate.objects.filter(result__run=run).select_related(
+        "small_model__provider_credential", "large_model__provider_credential"
+    )
+    for candidate in routing_candidates:
+        for model in (candidate.small_model, candidate.large_model):
+            if model is not None:
+                models[model.id] = model
+    return list(models.values())
 
 
 def get_provider_cache_key(model: LLMModel) -> tuple[str, str]:

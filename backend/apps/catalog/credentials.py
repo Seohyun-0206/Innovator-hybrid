@@ -53,3 +53,11 @@ def get_anthropic_base_url() -> str:
 
 def get_anthropic_access_token() -> str:
     return get_provider_access_token("anthropic", settings.ANTHROPIC_API_KEY)
+
+
+def get_vllm_base_url() -> str:
+    return get_provider_base_url("vllm", settings.VLLM_BASE_URL)
+
+
+def get_vllm_access_token() -> str:
+    return get_provider_access_token("vllm", settings.VLLM_API_KEY)

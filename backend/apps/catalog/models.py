@@ -9,6 +9,7 @@ class LLMModel(models.Model):
         ("gemini", "Gemini"),
         ("openrouter", "OpenRouter"),
         ("anthropic", "Anthropic"),
+        ("vllm", "vLLM"),
     ]
     ROLE_CHOICES = [
         ("general", "General"),
@@ -113,6 +114,7 @@ class EvaluationDataset(models.Model):
         ("upload", "Upload"),
         ("url", "URL"),
         ("huggingface", "Hugging Face"),
+        ("generated", "Generated Dataset"),
     ]
 
     name = models.CharField(max_length=160)
@@ -132,6 +134,14 @@ class EvaluationDataset(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="evaluation_datasets",
+    )
+    # 생성 데이터셋(GeneratedDataset)이 완료되면 자동으로 동기화되는 대상. 수동 업로드 데이터셋은 null.
+    source_generated_dataset = models.OneToOneField(
+        "GeneratedDataset",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="evaluation_dataset",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -191,6 +201,14 @@ class EvaluationRun(models.Model):
 
     name = models.CharField(max_length=160)
     dataset = models.ForeignKey(EvaluationDataset, on_delete=models.CASCADE, related_name="runs")
+    # Easy/Hard 데이터셋 조합 모드에서만 사용됩니다. 둘 다 지정되면 위 dataset은
+    # easy_dataset과 동일한 값으로 자동 채워지는 대표값입니다.
+    easy_dataset = models.ForeignKey(
+        EvaluationDataset, null=True, blank=True, on_delete=models.CASCADE, related_name="easy_runs"
+    )
+    hard_dataset = models.ForeignKey(
+        EvaluationDataset, null=True, blank=True, on_delete=models.CASCADE, related_name="hard_runs"
+    )
     evaluation_method = models.ForeignKey(
         EvaluationMethod,
         null=True,
@@ -221,6 +239,34 @@ class EvaluationRun(models.Model):
         return self.name
 
 
+class EvaluationDatasetSnapshot(models.Model):
+    """실험(run) 생성 시점에 문항을 확정해서 통째로 복제 저장합니다.
+
+    EvaluationDataset은 raw_content 텍스트 blob을 매번 다시 파싱하는 구조라 안정적인
+    문항 ID가 없습니다. 원본 데이터셋이 나중에 바뀌어도 이 실험은 항상 그때 그 문항으로
+    재현되도록, 인덱스가 아니라 문항 내용 자체를 questions_payload에 복제해 둡니다."""
+
+    run = models.OneToOneField(EvaluationRun, on_delete=models.CASCADE, related_name="dataset_snapshot")
+    dataset = models.ForeignKey(EvaluationDataset, on_delete=models.PROTECT, related_name="snapshots")
+    # Easy/Hard 데이터셋 조합 모드에서만 사용됩니다(재현성 보존용 참조).
+    easy_dataset = models.ForeignKey(
+        EvaluationDataset, null=True, blank=True, on_delete=models.PROTECT, related_name="easy_snapshots"
+    )
+    hard_dataset = models.ForeignKey(
+        EvaluationDataset, null=True, blank=True, on_delete=models.PROTECT, related_name="hard_snapshots"
+    )
+    # None/미지정 = 난이도 구분 없이 기존 방식대로 시드 셔플만 적용(하위호환).
+    easy_ratio = models.PositiveSmallIntegerField(null=True, blank=True)
+    seed = models.PositiveIntegerField()
+    total_questions = models.PositiveIntegerField()
+    # [{"question":..., "choices":[...], "answer":"B", "category":"...", "subject":"...", "difficulty":"easy"}, ...]
+    questions_payload = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"snapshot for {self.run_id}"
+
+
 class EvaluationResult(models.Model):
     STATUS_CHOICES = [
         ("pending", "Pending"),
@@ -229,9 +275,18 @@ class EvaluationResult(models.Model):
         ("failed", "Failed"),
     ]
 
+    RESULT_TYPE_CHOICES = [
+        ("single_model", "Single Model"),
+        ("routing", "Routing"),
+    ]
+
     run = models.ForeignKey(EvaluationRun, on_delete=models.CASCADE, related_name="results")
     dataset = models.ForeignKey(EvaluationDataset, on_delete=models.CASCADE, related_name="results")
-    model = models.ForeignKey(LLMModel, on_delete=models.CASCADE, related_name="evaluation_results")
+    # routing 타입은 고정된 모델이 없으므로(문항마다 달라짐) null 허용.
+    model = models.ForeignKey(LLMModel, on_delete=models.CASCADE, related_name="evaluation_results", null=True, blank=True)
+    result_type = models.CharField(max_length=32, choices=RESULT_TYPE_CHOICES, default="single_model")
+    # routing 타입 결과의 표시 이름(단일 모델 타입은 model.display_name을 그대로 씀).
+    candidate_label = models.CharField(max_length=160, blank=True)
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="pending")
     overall_accuracy = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
     strict_compliance_rate = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
@@ -239,6 +294,22 @@ class EvaluationResult(models.Model):
     parse_failure_rate = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
     latency_p50_ms = models.PositiveIntegerField(null=True, blank=True)
     latency_p95_ms = models.PositiveIntegerField(null=True, blank=True)
+    ttft_p50_ms = models.PositiveIntegerField(null=True, blank=True)
+    ttft_p95_ms = models.PositiveIntegerField(null=True, blank=True)
+    tpot_p50_ms = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    tpot_p95_ms = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    throughput_p50_tps = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    throughput_p95_tps = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    system_throughput_tps = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    kv_cache_usage_min = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    kv_cache_usage_avg = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    kv_cache_usage_max = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    # routing 타입 전용 — 문항이 실제로 small/large 중 어디로 갔는지 분포.
+    # 예: {"small": {"count": 72, "percent": 72.0}, "large": {"count": 28, "percent": 28.0}}
+    routing_model_distribution = models.JSONField(default=dict, blank=True)
+    # routing 타입 전용 — 라우터(Small Model) 판단 호출 자체의 지연시간(문항 채점 호출과 별개).
+    router_latency_p50_ms = models.PositiveIntegerField(null=True, blank=True)
+    router_latency_p95_ms = models.PositiveIntegerField(null=True, blank=True)
     input_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
     estimated_cost_usd = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
@@ -261,7 +332,9 @@ class EvaluationItemResult(models.Model):
     result = models.ForeignKey(EvaluationResult, on_delete=models.CASCADE, related_name="item_results")
     run = models.ForeignKey(EvaluationRun, on_delete=models.CASCADE, related_name="item_results")
     dataset = models.ForeignKey(EvaluationDataset, on_delete=models.CASCADE, related_name="item_results")
-    model = models.ForeignKey(LLMModel, on_delete=models.CASCADE, related_name="evaluation_item_results")
+    # "이 문항에 실제로 응답한 모델" — single_model 타입은 항상 result.model과 같고,
+    # routing 타입은 문항마다 small/large 중 실제로 뽑힌 모델이 들어갑니다.
+    model = models.ForeignKey(LLMModel, on_delete=models.SET_NULL, related_name="evaluation_item_results", null=True, blank=True)
     item_index = models.PositiveIntegerField(default=0)
     question = models.TextField()
     choices = models.JSONField(default=list, blank=True)
@@ -275,6 +348,11 @@ class EvaluationItemResult(models.Model):
     input_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
     latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    ttft_ms = models.PositiveIntegerField(null=True, blank=True)
+    # routing 타입 전용 — 라우터(항상 Small Model)의 원문 응답. exact match 판정에 씁니다.
+    # Router Prompt(입력)는 별도 저장하지 않고 EvaluationRoutingCandidate.routing_prompt +
+    # 이 row의 question을 조합해서 화면에서 재구성합니다.
+    router_output = models.TextField(blank=True)
     raw_output = models.TextField(blank=True)
     subject = models.CharField(max_length=160, blank=True)
     category = models.CharField(max_length=160, blank=True)
@@ -289,6 +367,36 @@ class EvaluationItemResult(models.Model):
 
     def __str__(self):
         return f"{self.result_id} item {self.item_index} attempt {self.attempt}"
+
+
+class EvaluationRoutingCandidate(models.Model):
+    """routing 타입 EvaluationResult 하나에 붙는 라우팅 설정.
+
+    PoC 범위: 후보 모델은 Small/Large 둘로 고정하고, Router는 항상 Small Model이 맡습니다
+    (별도 Router Model 선택 없음). 향후 Router Model을 선택 가능하게 하려면 이 모델에
+    nullable `router_model` FK를 추가하고 "없으면 small_model을 쓴다"는 fallback만 넣으면
+    되므로, 지금 스키마를 깨지 않고 확장할 수 있습니다."""
+
+    result = models.OneToOneField(EvaluationResult, on_delete=models.CASCADE, related_name="routing_config")
+    routing_prompt = models.TextField()
+    small_model = models.ForeignKey(
+        LLMModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    large_model = models.ForeignKey(
+        LLMModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"routing config for {self.result_id}"
 
 
 class RoutingPolicy(models.Model):
@@ -454,6 +562,7 @@ class ProviderCredential(models.Model):
         ("gemini", "Gemini"),
         ("openrouter", "OpenRouter"),
         ("anthropic", "Anthropic"),
+        ("vllm", "vLLM"),
     ]
 
     provider = models.CharField(max_length=32, choices=PROVIDER_CHOICES)
@@ -698,6 +807,25 @@ class GeneratedDataset(models.Model):
 
     def __str__(self):
         return f"{self.service_feature.name} generated dataset"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.status == "completed":
+            self.sync_evaluation_dataset()
+
+    def sync_evaluation_dataset(self):
+        EvaluationDataset.objects.update_or_create(
+            source_generated_dataset=self,
+            defaults={
+                "name": self.name,
+                "dataset_type": self.dataset_type,
+                "data_format": self.data_format,
+                "source": "generated",
+                "description": self.description,
+                "raw_content": self.raw_content,
+                "question_count": self.question_count,
+            },
+        )
 
 
 class PolicyDraft(models.Model):

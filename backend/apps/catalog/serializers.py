@@ -7,6 +7,7 @@ from apps.catalog.models import (
     EvaluationItemResult,
     EvaluationMethod,
     EvaluationResult,
+    EvaluationRoutingCandidate,
     EvaluationRun,
     GeneratedDataset,
     LLMModel,
@@ -215,9 +216,9 @@ class EvaluationMethodSerializer(serializers.ModelSerializer):
 class EvaluationItemResultSerializer(serializers.ModelSerializer):
     result_run_name = serializers.CharField(source="run.name", read_only=True)
     dataset_name = serializers.CharField(source="dataset.name", read_only=True)
-    model_display_name = serializers.CharField(source="model.display_name", read_only=True)
-    model_provider = serializers.CharField(source="model.provider", read_only=True)
-    model_name = serializers.CharField(source="model.name", read_only=True)
+    model_display_name = serializers.CharField(source="model.display_name", read_only=True, allow_null=True)
+    model_provider = serializers.CharField(source="model.provider", read_only=True, allow_null=True)
+    model_name = serializers.CharField(source="model.name", read_only=True, allow_null=True)
 
     class Meta:
         model = EvaluationItemResult
@@ -245,9 +246,29 @@ class EvaluationItemResultSerializer(serializers.ModelSerializer):
             "input_tokens",
             "output_tokens",
             "latency_ms",
+            "ttft_ms",
+            "router_output",
             "raw_output",
             "subject",
             "category",
+            "created_at",
+        ]
+
+
+class EvaluationRoutingCandidateSerializer(serializers.ModelSerializer):
+    small_model_display_name = serializers.CharField(source="small_model.display_name", read_only=True, allow_null=True)
+    large_model_display_name = serializers.CharField(source="large_model.display_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = EvaluationRoutingCandidate
+        fields = [
+            "id",
+            "result",
+            "routing_prompt",
+            "small_model",
+            "small_model_display_name",
+            "large_model",
+            "large_model_display_name",
             "created_at",
         ]
 
@@ -258,11 +279,12 @@ class EvaluationResultSerializer(serializers.ModelSerializer):
     dataset_type = serializers.CharField(source="dataset.dataset_type", read_only=True)
     dataset_source = serializers.CharField(source="dataset.source", read_only=True)
     dataset_question_count = serializers.IntegerField(source="dataset.question_count", read_only=True)
-    model_display_name = serializers.CharField(source="model.display_name", read_only=True)
-    model_provider = serializers.CharField(source="model.provider", read_only=True)
-    model_name = serializers.CharField(source="model.name", read_only=True)
+    model_display_name = serializers.CharField(source="model.display_name", read_only=True, allow_null=True)
+    model_provider = serializers.CharField(source="model.provider", read_only=True, allow_null=True)
+    model_name = serializers.CharField(source="model.name", read_only=True, allow_null=True)
     evaluation_method_name = serializers.CharField(source="run.evaluation_method.display_name", read_only=True, allow_null=True)
     item_result_count = serializers.IntegerField(source="item_results.count", read_only=True)
+    routing_config = serializers.SerializerMethodField()
 
     class Meta:
         model = EvaluationResult
@@ -279,6 +301,12 @@ class EvaluationResultSerializer(serializers.ModelSerializer):
             "model_display_name",
             "model_provider",
             "model_name",
+            "result_type",
+            "candidate_label",
+            "routing_model_distribution",
+            "router_latency_p50_ms",
+            "router_latency_p95_ms",
+            "routing_config",
             "evaluation_method_name",
             "status",
             "overall_accuracy",
@@ -287,6 +315,16 @@ class EvaluationResultSerializer(serializers.ModelSerializer):
             "parse_failure_rate",
             "latency_p50_ms",
             "latency_p95_ms",
+            "ttft_p50_ms",
+            "ttft_p95_ms",
+            "tpot_p50_ms",
+            "tpot_p95_ms",
+            "throughput_p50_tps",
+            "throughput_p95_tps",
+            "system_throughput_tps",
+            "kv_cache_usage_min",
+            "kv_cache_usage_avg",
+            "kv_cache_usage_max",
             "input_tokens",
             "output_tokens",
             "estimated_cost_usd",
@@ -299,9 +337,43 @@ class EvaluationResultSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def get_routing_config(self, result):
+        routing_config = getattr(result, "routing_config", None)
+        if routing_config is None:
+            return None
+        return EvaluationRoutingCandidateSerializer(routing_config).data
+
+
+class EvaluationRoutingCandidateInputSerializer(serializers.Serializer):
+    """실험 생성 화면에서 라우팅 후보 하나를 입력받는 쓰기 전용 형태.
+
+    PoC 범위: 후보 모델은 Small/Large 둘로 고정, Router는 항상 Small Model이 맡습니다."""
+
+    display_name = serializers.CharField(max_length=160, required=False, allow_blank=True)
+    routing_prompt = serializers.CharField()
+    small_model = serializers.PrimaryKeyRelatedField(queryset=LLMModel.objects.filter(is_active=True))
+    large_model = serializers.PrimaryKeyRelatedField(queryset=LLMModel.objects.filter(is_active=True))
+
 
 class EvaluationRunSerializer(serializers.ModelSerializer):
-    model_ids = serializers.ListField(child=serializers.IntegerField(), write_only=True, allow_empty=False)
+    model_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False, default=list
+    )
+    # 라우팅 후보(Small/Large 모델 + Routing Prompt) — 단일 모델 후보(model_ids)와 자유롭게 섞을 수 있음.
+    routing_candidates = EvaluationRoutingCandidateInputSerializer(many=True, write_only=True, required=False, default=list)
+    # Easy/Hard 비율 샘플링을 위한 입력. 지정하지 않으면 기존과 동일하게(난이도 구분 없이) 문항을 뽑습니다.
+    easy_ratio = serializers.IntegerField(write_only=True, required=False, allow_null=True, min_value=0, max_value=100)
+    # 단일 데이터셋 모드에서만 필요. Easy/Hard 데이터셋 조합 모드에서는 생략하면 easy_dataset으로 자동 채워집니다.
+    dataset = serializers.PrimaryKeyRelatedField(queryset=EvaluationDataset.objects.all(), required=False)
+    # Easy/Hard 데이터셋 조합 모드 — 두 데이터셋을 각각 통째로 easy/hard 풀로 취급해 easy_ratio만큼 뽑습니다.
+    easy_dataset = serializers.PrimaryKeyRelatedField(
+        queryset=EvaluationDataset.objects.all(), required=False, allow_null=True
+    )
+    hard_dataset = serializers.PrimaryKeyRelatedField(
+        queryset=EvaluationDataset.objects.all(), required=False, allow_null=True
+    )
+    easy_dataset_name = serializers.CharField(source="easy_dataset.name", read_only=True, allow_null=True)
+    hard_dataset_name = serializers.CharField(source="hard_dataset.name", read_only=True, allow_null=True)
     dataset_name = serializers.CharField(source="dataset.name", read_only=True)
     dataset_type = serializers.CharField(source="dataset.dataset_type", read_only=True)
     dataset_question_count = serializers.IntegerField(source="dataset.question_count", read_only=True)
@@ -319,10 +391,16 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
             "dataset_name",
             "dataset_type",
             "dataset_question_count",
+            "easy_dataset",
+            "easy_dataset_name",
+            "hard_dataset",
+            "hard_dataset_name",
+            "easy_ratio",
             "evaluation_method",
             "evaluation_method_name",
             "evaluation_method_type",
             "model_ids",
+            "routing_candidates",
             "status",
             "config",
             "notes",
@@ -343,13 +421,27 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         dataset = attrs.get("dataset", getattr(self.instance, "dataset", None))
+        easy_dataset = attrs.get("easy_dataset", getattr(self.instance, "easy_dataset", None))
+        hard_dataset = attrs.get("hard_dataset", getattr(self.instance, "hard_dataset", None))
+        if self.instance is None:
+            if bool(easy_dataset) != bool(hard_dataset):
+                raise serializers.ValidationError("Easy 데이터셋과 Hard 데이터셋을 모두 지정해야 합니다.")
+            if not dataset and not (easy_dataset and hard_dataset):
+                raise serializers.ValidationError("데이터셋 또는 Easy/Hard 데이터셋 조합을 지정해야 합니다.")
+
+        effective_dataset = easy_dataset if (easy_dataset and hard_dataset) else dataset
         method = attrs.get("evaluation_method", getattr(self.instance, "evaluation_method", None))
-        if method and dataset and method.compatible_dataset_types:
-            compatible_type_keys = getattr(dataset, "compatible_type_keys", {dataset.dataset_type})
+        if method and effective_dataset and method.compatible_dataset_types:
+            compatible_type_keys = getattr(effective_dataset, "compatible_type_keys", {effective_dataset.dataset_type})
             if compatible_type_keys.isdisjoint(set(method.compatible_dataset_types)):
                 raise serializers.ValidationError(
                     {"evaluation_method": "선택한 평가방식은 이 데이터셋 유형과 호환되지 않습니다."}
                 )
+        if self.instance is None:
+            model_ids = attrs.get("model_ids") or []
+            routing_candidates = attrs.get("routing_candidates") or []
+            if not model_ids and not routing_candidates:
+                raise serializers.ValidationError("단일 모델 후보 또는 라우팅 후보를 1개 이상 지정해야 합니다.")
         return attrs
 
     def validate_model_ids(self, value):
@@ -360,7 +452,15 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        model_ids = validated_data.pop("model_ids")
+        from apps.catalog.evaluation import PilotEvaluationRunner
+
+        model_ids = validated_data.pop("model_ids", [])
+        routing_candidates = validated_data.pop("routing_candidates", [])
+        easy_ratio = validated_data.pop("easy_ratio", None)
+        easy_dataset = validated_data.get("easy_dataset")
+        hard_dataset = validated_data.get("hard_dataset")
+        if easy_dataset and hard_dataset and not validated_data.get("dataset"):
+            validated_data["dataset"] = easy_dataset
         if validated_data.get("evaluation_method") is None:
             validated_data["evaluation_method"] = EvaluationMethod.objects.filter(name="mmlu_multiple_choice", is_active=True).first()
         run = EvaluationRun.objects.create(**validated_data)
@@ -371,6 +471,7 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
                 run=run,
                 dataset=run.dataset,
                 model=model,
+                result_type="single_model",
                 status="pending",
                 scorecard={
                     "quality_level": model.quality_level,
@@ -379,6 +480,36 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
                     "note": "평가 실행 기록이 생성되었습니다. 실제 추론 평가 worker가 완료되면 지표가 업데이트됩니다.",
                 },
             )
+        for candidate in routing_candidates:
+            small_model = candidate["small_model"]
+            large_model = candidate["large_model"]
+            display_name = candidate.get("display_name") or f"Routing: {small_model.display_name} / {large_model.display_name}"
+            result = EvaluationResult.objects.create(
+                run=run,
+                dataset=run.dataset,
+                model=None,
+                result_type="routing",
+                candidate_label=display_name,
+                status="pending",
+                scorecard={"note": "라우팅 실험 후보가 생성되었습니다. 실행 후 지표가 업데이트됩니다."},
+            )
+            EvaluationRoutingCandidate.objects.create(
+                result=result,
+                routing_prompt=candidate["routing_prompt"],
+                small_model=small_model,
+                large_model=large_model,
+            )
+        # 실험 생성 시점에 문항을 확정해서 스냅샷으로 저장합니다 — 이후 재실행해도
+        # 원본 데이터셋이 바뀌는 것과 무관하게 항상 같은 문항으로 재현됩니다.
+        PilotEvaluationRunner().build_dataset_snapshot(
+            run=run,
+            dataset=run.dataset,
+            easy_dataset=run.easy_dataset,
+            hard_dataset=run.hard_dataset,
+            easy_ratio=easy_ratio,
+            seed=run.config.get("seed"),
+            total_questions=run.config.get("total_questions") or run.config.get("max_questions"),
+        )
         return run
 
 

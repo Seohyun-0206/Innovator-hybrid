@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   BarChart3Icon,
   BeakerIcon,
@@ -10,15 +10,28 @@ import {
   FlaskConicalIcon,
   LayersIcon,
   PlayIcon,
+  PlusIcon,
   RefreshCwIcon,
+  RouteIcon,
   SearchIcon,
   ServerIcon,
+  ShuffleIcon,
   TrashIcon,
   SettingsIcon,
   SparklesIcon,
+  XIcon,
 } from 'lucide-vue-next'
 import AppSelect, { SelectOption } from '../components/common/AppSelect.vue'
-import { EvaluationDataset, EvaluationMethod, EvaluationRun, LLMModel, ModelConnectivity, useApi } from '../composables/useApi'
+import {
+  DatasetSnapshotPreview,
+  EvaluationDataset,
+  EvaluationMethod,
+  EvaluationRoutingCandidateInput,
+  EvaluationRun,
+  LLMModel,
+  ModelConnectivity,
+  useApi,
+} from '../composables/useApi'
 
 const api = useApi()
 const datasets = ref<EvaluationDataset[]>([])
@@ -35,10 +48,17 @@ const statusFilter = ref<'all' | 'pending' | 'running' | 'completed' | 'failed'>
 const selectedPreset = ref('custom')
 const error = ref('')
 const message = ref('')
+const datasetPreview = ref<DatasetSnapshotPreview | null>(null)
+const previewLoading = ref(false)
+let previewDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const runForm = reactive({
   name: '',
   dataset: '',
+  easy_ratio_enabled: false,
+  easy_dataset: '',
+  hard_dataset: '',
+  easy_ratio: 50,
   evaluation_method: '',
   model_ids: [] as number[],
   few_shot: 0,
@@ -50,6 +70,26 @@ const runForm = reactive({
   retry: 0,
   notes: '',
 })
+
+type RoutingCandidateDraft = {
+  key: number
+  display_name: string
+  routing_prompt: string
+  small_model: string
+  large_model: string
+}
+
+let routingCandidateKeySeq = 0
+function newRoutingCandidate(): RoutingCandidateDraft {
+  routingCandidateKeySeq += 1
+  return { key: routingCandidateKeySeq, display_name: '', routing_prompt: '', small_model: '', large_model: '' }
+}
+
+const routingCandidates = ref<RoutingCandidateDraft[]>([])
+
+function isValidRoutingCandidate(candidate: RoutingCandidateDraft) {
+  return Boolean(candidate.routing_prompt.trim() && candidate.small_model && candidate.large_model)
+}
 
 const datasetTypeOptions: SelectOption[] = [
   { value: 'multiple_choice', label: '객관식 평가' },
@@ -123,6 +163,10 @@ const methodOptions = computed<SelectOption[]>(() =>
 
 const activeModels = computed(() => models.value.filter((model) => model.is_active))
 
+const modelSelectOptions = computed<SelectOption[]>(() =>
+  activeModels.value.map((model) => ({ value: String(model.id), label: `${model.display_name} (${model.provider}/${model.name})` }))
+)
+
 const modelsByProvider = computed(() => {
   const groups: Record<string, LLMModel[]> = {}
   for (const model of activeModels.value) {
@@ -139,6 +183,11 @@ const connectivityByModelId = computed(() =>
 )
 
 const selectedDataset = computed(() => datasets.value.find((dataset) => dataset.id === Number(runForm.dataset)) ?? null)
+const selectedEasyDataset = computed(() => datasets.value.find((dataset) => dataset.id === Number(runForm.easy_dataset)) ?? null)
+const selectedHardDataset = computed(() => datasets.value.find((dataset) => dataset.id === Number(runForm.hard_dataset)) ?? null)
+const datasetSelectionReady = computed(() =>
+  runForm.easy_ratio_enabled ? Boolean(runForm.easy_dataset && runForm.hard_dataset) : Boolean(runForm.dataset)
+)
 const selectedMethod = computed(() => methods.value.find((method) => method.id === Number(runForm.evaluation_method)) ?? null)
 const selectedModels = computed(() => activeModels.value.filter((model) => runForm.model_ids.includes(model.id)))
 
@@ -152,22 +201,42 @@ const ollamaConnectivityIssue = computed(() => {
   return unavailable.length ? unavailable : null
 })
 
+const hardRatioProxy = computed({
+  get: () => 100 - runForm.easy_ratio,
+  set: (value: number) => {
+    const clamped = Math.min(100, Math.max(0, value))
+    runForm.easy_ratio = 100 - clamped
+  },
+})
+
+const validRoutingCandidates = computed(() => routingCandidates.value.filter(isValidRoutingCandidate))
+const hasAnyCandidate = computed(() => runForm.model_ids.length > 0 || validRoutingCandidates.value.length > 0)
+
+const allInvolvedModelIds = computed(() => {
+  const ids = new Set(runForm.model_ids)
+  validRoutingCandidates.value.forEach((candidate) => {
+    ids.add(Number(candidate.small_model))
+    ids.add(Number(candidate.large_model))
+  })
+  return [...ids]
+})
+
 const selectedModelsReady = computed(() => {
-  if (!runForm.model_ids.length) return false
-  return runForm.model_ids.every((modelId) => connectivityByModelId.value[modelId]?.status === 'online')
+  if (!allInvolvedModelIds.value.length) return false
+  return allInvolvedModelIds.value.every((modelId) => connectivityByModelId.value[modelId]?.status === 'online')
 })
 
 const workflowSteps = computed(() => [
-  { id: 'dataset', label: '데이터셋', done: Boolean(runForm.dataset), icon: DatabaseIcon },
+  { id: 'dataset', label: '데이터셋', done: datasetSelectionReady.value, icon: DatabaseIcon },
   { id: 'method', label: '평가방식', done: Boolean(runForm.evaluation_method), icon: ClipboardListIcon },
-  { id: 'models', label: '비교 모델', done: runForm.model_ids.length > 0, icon: LayersIcon },
+  { id: 'models', label: '비교 후보', done: hasAnyCandidate.value, icon: LayersIcon },
   { id: 'config', label: '실행 설정', done: runForm.total_questions > 0, icon: SettingsIcon },
 ])
 
 const readinessChecks = computed(() => [
-  { label: '평가 데이터셋 선택', ok: Boolean(runForm.dataset) },
+  { label: '평가 데이터셋 선택', ok: datasetSelectionReady.value },
   { label: '평가방식 선택', ok: Boolean(runForm.evaluation_method) },
-  { label: '비교 모델 1개 이상', ok: runForm.model_ids.length > 0 },
+  { label: '후보 1개 이상 구성 (단일 모델 또는 라우팅)', ok: hasAnyCandidate.value },
   { label: '선택 모델 사용 가능', ok: selectedModelsReady.value },
   { label: '평가 문항 수 설정', ok: runForm.total_questions > 0 },
 ])
@@ -175,29 +244,36 @@ const readinessChecks = computed(() => [
 const canCreateRun = computed(() => readinessChecks.value.every((check) => check.ok))
 
 const experimentSummaryCards = computed(() => {
-  if (!selectedDataset.value || !selectedMethod.value) {
+  if (!datasetSelectionReady.value || !selectedMethod.value) {
     return []
   }
+  const datasetCard = runForm.easy_ratio_enabled
+    ? {
+        label: '데이터셋',
+        value: `${selectedEasyDataset.value?.name ?? '-'} + ${selectedHardDataset.value?.name ?? '-'}`,
+        sub: `Easy ${runForm.easy_ratio}% / Hard ${100 - runForm.easy_ratio}%`,
+      }
+    : {
+        label: '데이터셋',
+        value: selectedDataset.value?.name ?? '-',
+        sub: `${getDatasetTypeLabel(selectedDataset.value?.dataset_type ?? '')} · ${selectedDataset.value?.question_count || '-'}문항`,
+      }
   return [
-    {
-      label: '데이터셋',
-      value: selectedDataset.value.name,
-      sub: `${getDatasetTypeLabel(selectedDataset.value.dataset_type)} · ${selectedDataset.value.question_count || '-'}문항`,
-    },
+    datasetCard,
     {
       label: '평가방식',
       value: selectedMethod.value.display_name,
       sub: selectedMethod.value.method_type,
     },
     {
-      label: '비교 모델',
-      value: `${selectedModels.value.length}개`,
-      sub: selectedModels.value.map((model) => model.display_name).join(', ') || '모델을 선택하세요',
+      label: '비교 후보',
+      value: `단일 ${selectedModels.value.length}개 · 라우팅 ${validRoutingCandidates.value.length}개`,
+      sub: selectedModels.value.map((model) => model.display_name).join(', ') || '후보를 구성하세요',
     },
     {
       label: '실행 규모',
       value: `N=${runForm.total_questions}`,
-      sub: `seed ${runForm.seed} · temp ${runForm.temperature}`,
+      sub: runForm.easy_ratio_enabled ? `Easy ${runForm.easy_ratio}% · seed ${runForm.seed}` : `seed ${runForm.seed} · temp ${runForm.temperature}`,
     },
   ]
 })
@@ -211,6 +287,8 @@ const filteredRuns = computed(() => {
         !query ||
         run.name.toLowerCase().includes(query) ||
         run.dataset_name.toLowerCase().includes(query) ||
+        (run.easy_dataset_name ?? '').toLowerCase().includes(query) ||
+        (run.hard_dataset_name ?? '').toLowerCase().includes(query) ||
         run.dataset_type.toLowerCase().includes(query) ||
         run.status.toLowerCase().includes(query) ||
         (run.evaluation_method_name ?? '').toLowerCase().includes(query)
@@ -279,9 +357,66 @@ async function loadPageData() {
       applyMethodDefaults(loadedMethods[0])
     }
     await loadModelAvailability()
+    await refreshDatasetPreview()
   } finally {
     loading.value = false
   }
+}
+
+function scheduleDatasetPreviewRefresh() {
+  if (previewDebounceTimer) clearTimeout(previewDebounceTimer)
+  previewDebounceTimer = setTimeout(refreshDatasetPreview, 400)
+}
+
+async function refreshDatasetPreview() {
+  if (!datasetSelectionReady.value) {
+    datasetPreview.value = null
+    return
+  }
+  previewLoading.value = true
+  try {
+    datasetPreview.value = await api.getDatasetSnapshotPreview(
+      runForm.easy_ratio_enabled
+        ? {
+            easyDataset: Number(runForm.easy_dataset),
+            hardDataset: Number(runForm.hard_dataset),
+            easyRatio: runForm.easy_ratio,
+            seed: runForm.seed,
+            totalQuestions: runForm.total_questions,
+          }
+        : {
+            dataset: Number(runForm.dataset),
+            easyRatio: null,
+            seed: runForm.seed,
+            totalQuestions: runForm.total_questions,
+          }
+    )
+  } catch {
+    datasetPreview.value = null
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+watch(
+  () => [
+    runForm.dataset,
+    runForm.easy_ratio_enabled,
+    runForm.easy_dataset,
+    runForm.hard_dataset,
+    runForm.easy_ratio,
+    runForm.seed,
+    runForm.total_questions,
+  ],
+  scheduleDatasetPreviewRefresh
+)
+
+function addRoutingCandidate() {
+  routingCandidates.value.push(newRoutingCandidate())
+}
+
+function removeRoutingCandidate(key: number) {
+  routingCandidates.value = routingCandidates.value.filter((candidate) => candidate.key !== key)
 }
 
 function getDefaultDataset() {
@@ -340,12 +475,22 @@ async function createRun() {
   }
   savingRun.value = true
   try {
-    await ensureModelsReady(runForm.model_ids)
+    await ensureModelsReady(allInvolvedModelIds.value)
+    const routingCandidatesPayload: EvaluationRoutingCandidateInput[] = validRoutingCandidates.value.map((candidate) => ({
+      display_name: candidate.display_name || undefined,
+      routing_prompt: candidate.routing_prompt,
+      small_model: Number(candidate.small_model),
+      large_model: Number(candidate.large_model),
+    }))
     await api.createEvaluationRun({
       name: runForm.name || `${selectedDatasetName.value} 실험`,
-      dataset: Number(runForm.dataset),
+      ...(runForm.easy_ratio_enabled
+        ? { easy_dataset: Number(runForm.easy_dataset), hard_dataset: Number(runForm.hard_dataset) }
+        : { dataset: Number(runForm.dataset) }),
+      easy_ratio: runForm.easy_ratio_enabled ? runForm.easy_ratio : null,
       evaluation_method: Number(runForm.evaluation_method),
       model_ids: runForm.model_ids,
+      routing_candidates: routingCandidatesPayload,
       config: {
         few_shot: runForm.few_shot,
         temperature: runForm.temperature,
@@ -361,6 +506,10 @@ async function createRun() {
     Object.assign(runForm, {
       name: '',
       model_ids: [],
+      easy_ratio_enabled: false,
+      easy_dataset: '',
+      hard_dataset: '',
+      easy_ratio: 50,
       few_shot: 0,
       temperature: 0,
       total_questions: 20,
@@ -370,6 +519,7 @@ async function createRun() {
       retry: 0,
       notes: '',
     })
+    routingCandidates.value = []
     selectedPreset.value = 'custom'
     message.value = '실험이 생성되었습니다. 아래 실험 기록에서 실행을 시작하거나 결과 분석으로 이동하세요.'
     await loadPageData()
@@ -508,7 +658,11 @@ function openResults(run: EvaluationRun) {
   openWorkspaceTab('model-evaluation')
 }
 
-const selectedDatasetName = computed(() => selectedDataset.value?.name ?? '데이터셋')
+const selectedDatasetName = computed(() =>
+  runForm.easy_ratio_enabled
+    ? `${selectedEasyDataset.value?.name ?? '데이터셋'}+${selectedHardDataset.value?.name ?? '데이터셋'}`
+    : selectedDataset.value?.name ?? '데이터셋'
+)
 
 onMounted(loadPageData)
 </script>
@@ -608,7 +762,7 @@ onMounted(loadPageData)
           <section class="subsection-card">
             <h4 class="mb-3 text-sm font-semibold text-zinc-200">2. 실험 조합</h4>
             <div class="grid gap-4 md:grid-cols-2">
-              <label class="block md:col-span-2">
+              <label v-if="!runForm.easy_ratio_enabled" class="block md:col-span-2">
                 <span class="ui-label">평가 데이터셋</span>
                 <AppSelect v-model="runForm.dataset" :options="datasetOptions" />
                 <p v-if="selectedDataset" class="mt-1.5 text-xs text-zinc-500">
@@ -623,6 +777,62 @@ onMounted(loadPageData)
                 <p v-if="selectedMethod" class="mt-1.5 text-xs text-zinc-500">{{ selectedMethod.description || '평가방식 설명 없음' }}</p>
               </label>
             </div>
+
+            <div class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+              <label class="flex items-center gap-2 text-sm font-medium text-zinc-300">
+                <input v-model="runForm.easy_ratio_enabled" type="checkbox" class="checkbox-accent" />
+                Easy/Hard 데이터셋 조합 사용
+              </label>
+              <div v-if="runForm.easy_ratio_enabled" class="mt-3 space-y-3">
+                <div class="grid gap-3 md:grid-cols-2">
+                  <label class="block">
+                    <span class="ui-label text-xs">Easy 데이터셋</span>
+                    <AppSelect v-model="runForm.easy_dataset" :options="datasetOptions" />
+                  </label>
+                  <label class="block">
+                    <span class="ui-label text-xs">Hard 데이터셋</span>
+                    <AppSelect v-model="runForm.hard_dataset" :options="datasetOptions" />
+                  </label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <label class="flex items-center gap-1.5 text-xs text-zinc-400">
+                    Easy 비율(%)
+                    <input
+                      v-model.number="runForm.easy_ratio"
+                      type="number"
+                      min="0"
+                      max="100"
+                      class="w-20 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+                    />
+                  </label>
+                  <label class="flex items-center gap-1.5 text-xs text-zinc-400">
+                    Hard 비율(%)
+                    <input
+                      v-model.number="hardRatioProxy"
+                      type="number"
+                      min="0"
+                      max="100"
+                      class="w-20 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+                    />
+                  </label>
+                </div>
+              </div>
+              <p v-else class="mt-1 text-xs text-zinc-600">단일 데이터셋에서 문항을 그대로 뽑습니다. 체크하면 Easy/Hard 데이터셋을 각각 골라 비율대로 조합합니다.</p>
+
+              <div class="mt-3 flex items-center justify-between gap-3 rounded-md bg-zinc-900/60 px-3 py-2 text-xs">
+                <span class="text-zinc-400">
+                  Dataset Preview —
+                  <template v-if="previewLoading">불러오는 중...</template>
+                  <template v-else-if="datasetPreview">
+                    총 {{ datasetPreview.total_questions }}문항 (Easy {{ datasetPreview.easy_count }} / Hard {{ datasetPreview.hard_count }})
+                  </template>
+                  <template v-else>데이터셋을 선택하면 미리보기가 표시됩니다.</template>
+                </span>
+                <button class="text-indigo-300 hover:text-indigo-200" type="button" @click="refreshDatasetPreview">
+                  <RefreshCwIcon :class="['h-3.5 w-3.5', previewLoading ? 'animate-spin' : '']" />
+                </button>
+              </div>
+            </div>
           </section>
 
           <section class="subsection-card">
@@ -630,7 +840,7 @@ onMounted(loadPageData)
               <div>
                 <div class="flex items-center gap-2">
                   <LayersIcon class="h-4 w-4 text-indigo-400" />
-                  <h4 class="text-sm font-semibold text-zinc-200">3. 비교 모델</h4>
+                  <h4 class="text-sm font-semibold text-zinc-200">3. 단일 모델 후보</h4>
                   <span class="badge badge-muted">{{ runForm.model_ids.length }}개 선택</span>
                 </div>
                 <p class="mt-1 text-xs text-zinc-500">동일 데이터셋·평가방식 안에서 비교할 모델을 선택합니다.</p>
@@ -697,10 +907,73 @@ onMounted(loadPageData)
             </div>
           </section>
 
+          <section class="subsection-card">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div class="flex items-center gap-2">
+                  <RouteIcon class="h-4 w-4 text-indigo-400" />
+                  <h4 class="text-sm font-semibold text-zinc-200">4. 라우팅 후보</h4>
+                  <span class="badge badge-muted">{{ validRoutingCandidates.length }}개</span>
+                </div>
+                <p class="mt-1 text-xs text-zinc-500">Small/Large 모델과 Routing Prompt를 지정합니다. Router는 항상 Small Model이 맡습니다.</p>
+              </div>
+              <button class="btn-soft-primary shrink-0" type="button" @click="addRoutingCandidate">
+                <PlusIcon class="h-3.5 w-3.5" />
+                후보 추가
+              </button>
+            </div>
+
+            <div class="space-y-3">
+              <div v-for="candidate in routingCandidates" :key="candidate.key" class="list-item px-3 py-3">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <span class="badge badge-primary shrink-0">
+                    <ShuffleIcon class="h-3.5 w-3.5" />
+                    라우팅 후보
+                  </span>
+                  <button
+                    class="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-red-900/40 hover:text-red-400"
+                    type="button"
+                    title="후보 제거"
+                    @click="removeRoutingCandidate(candidate.key)"
+                  >
+                    <XIcon class="h-4 w-4" />
+                  </button>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2">
+                  <label class="block">
+                    <span class="ui-label">표시 이름 (선택)</span>
+                    <input v-model.trim="candidate.display_name" placeholder="예: Small→Large Router" class="ui-input" />
+                  </label>
+                  <label class="block">
+                    <span class="ui-label">Small Model</span>
+                    <AppSelect v-model="candidate.small_model" :options="modelSelectOptions" placeholder="모델 선택" />
+                  </label>
+                  <label class="block md:col-span-2">
+                    <span class="ui-label">Large Model</span>
+                    <AppSelect v-model="candidate.large_model" :options="modelSelectOptions" placeholder="모델 선택" />
+                  </label>
+                  <label class="block md:col-span-2">
+                    <span class="ui-label">Routing Prompt</span>
+                    <textarea
+                      v-model.trim="candidate.routing_prompt"
+                      rows="3"
+                      placeholder="다음 질문의 난이도를 판단해 small 또는 large 중 하나만 답하세요.&#10;질문: {question}"
+                      class="ui-textarea"
+                    ></textarea>
+                    <p class="mt-1 text-xs text-zinc-500">응답은 반드시 small 또는 large 문자열 하나만 반환하도록 작성하세요 (exact match로 판정합니다).</p>
+                  </label>
+                </div>
+              </div>
+              <p v-if="!routingCandidates.length" class="list-item px-3 py-6 text-center text-sm text-zinc-600">
+                라우팅 후보가 없습니다. 필요하면 "후보 추가"를 눌러 구성하세요.
+              </p>
+            </div>
+          </section>
+
           <details class="subsection-card">
             <summary class="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-zinc-200">
               <SettingsIcon class="h-4 w-4 text-indigo-400" />
-              4. 실행 파라미터
+              5. 실행 파라미터
               <span class="badge badge-muted">고급</span>
             </summary>
             <p class="alert-info mt-3 text-xs">재현성과 비용·시간 균형을 위해 문항 수, 시드, 응답 길이를 조정합니다.</p>
@@ -855,11 +1128,16 @@ onMounted(loadPageData)
                 <span :class="['badge shrink-0', statusClass(run.status)]">{{ getStatusLabel(run.status) }}</span>
               </div>
               <p class="truncate text-xs text-zinc-500">
-                {{ run.dataset_name }} · {{ getDatasetTypeLabel(run.dataset_type) }} ·
-                {{ run.evaluation_method_name || '평가방식 미지정' }}
+                <template v-if="run.easy_dataset && run.hard_dataset">
+                  {{ run.easy_dataset_name }} + {{ run.hard_dataset_name }}
+                </template>
+                <template v-else>
+                  {{ run.dataset_name }} · {{ getDatasetTypeLabel(run.dataset_type) }}
+                </template>
+                · {{ run.evaluation_method_name || '평가방식 미지정' }}
               </p>
               <p class="mt-1 text-xs text-zinc-600">
-                Run #{{ run.id }} · {{ formatRunConfig(run) }} · {{ run.results.length }}개 모델 · 생성 {{ formatDate(run.created_at) }}
+                Run #{{ run.id }} · {{ formatRunConfig(run) }} · {{ run.results.length }}개 후보 · 생성 {{ formatDate(run.created_at) }}
               </p>
             </div>
 

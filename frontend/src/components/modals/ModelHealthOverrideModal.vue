@@ -87,7 +87,7 @@ function submit() {
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Provider</span>
-            <AppSelect v-model="form.provider" :options="[{ value: '', label: '전체 Provider' }, 'ollama', 'openai', 'gemini', 'openrouter', 'anthropic']" />
+            <AppSelect v-model="form.provider" :options="[{ value: '', label: '전체 Provider' }, 'ollama', 'openai', 'gemini', 'openrouter', 'anthropic', 'vllm']" />
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">모델명</span>

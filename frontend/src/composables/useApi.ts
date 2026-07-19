@@ -163,7 +163,10 @@ export type EvaluationDataset = {
   updated_at: string
 }
 
-export type EvaluationDatasetPayload = Omit<EvaluationDataset, 'id' | 'question_count' | 'uploaded_by' | 'uploaded_by_username' | 'created_at' | 'updated_at'>
+export type EvaluationDatasetPayload = Omit<
+  EvaluationDataset,
+  'id' | 'question_count' | 'uploaded_by' | 'uploaded_by_username' | 'created_at' | 'updated_at'
+>
 
 export type EvaluationMethod = {
   id: number
@@ -189,10 +192,10 @@ export type EvaluationItemResult = {
   result_run_name: string
   dataset: number
   dataset_name: string
-  model: number
-  model_display_name: string
-  model_provider: string
-  model_name: string
+  model: number | null
+  model_display_name: string | null
+  model_provider: string | null
+  model_name: string | null
   item_index: number
   question: string
   choices: string[]
@@ -206,10 +209,28 @@ export type EvaluationItemResult = {
   input_tokens: number
   output_tokens: number
   latency_ms: number | null
+  ttft_ms: number | null
+  router_output: string
   raw_output: string
   subject: string
   category: string
   created_at: string
+}
+
+export type EvaluationRoutingCandidate = {
+  id: number
+  result: number
+  routing_prompt: string
+  small_model: number | null
+  small_model_display_name: string | null
+  large_model: number | null
+  large_model_display_name: string | null
+  created_at: string
+}
+
+export type RoutingModelDistributionEntry = {
+  count: number
+  percent: number
 }
 
 export type EvaluationResult = {
@@ -221,10 +242,16 @@ export type EvaluationResult = {
   dataset_type: string
   dataset_source: string
   dataset_question_count: number
-  model: number
-  model_display_name: string
-  model_provider: string
-  model_name: string
+  model: number | null
+  model_display_name: string | null
+  model_provider: string | null
+  model_name: string | null
+  result_type: 'single_model' | 'routing'
+  candidate_label: string
+  routing_model_distribution: Record<string, RoutingModelDistributionEntry>
+  router_latency_p50_ms: number | null
+  router_latency_p95_ms: number | null
+  routing_config: EvaluationRoutingCandidate | null
   evaluation_method_name: string | null
   status: string
   overall_accuracy: string | null
@@ -233,6 +260,16 @@ export type EvaluationResult = {
   parse_failure_rate: string | null
   latency_p50_ms: number | null
   latency_p95_ms: number | null
+  ttft_p50_ms: number | null
+  ttft_p95_ms: number | null
+  tpot_p50_ms: string | null
+  tpot_p95_ms: string | null
+  throughput_p50_tps: string | null
+  throughput_p95_tps: string | null
+  system_throughput_tps: string | null
+  kv_cache_usage_min: string | null
+  kv_cache_usage_avg: string | null
+  kv_cache_usage_max: string | null
   input_tokens: number
   output_tokens: number
   estimated_cost_usd: string | null
@@ -252,6 +289,10 @@ export type EvaluationRun = {
   dataset_name: string
   dataset_type: string
   dataset_question_count: number
+  easy_dataset: number | null
+  easy_dataset_name: string | null
+  hard_dataset: number | null
+  hard_dataset_name: string | null
   evaluation_method: number | null
   evaluation_method_name: string | null
   evaluation_method_type: string | null
@@ -267,13 +308,30 @@ export type EvaluationRun = {
   results: EvaluationResult[]
 }
 
+export type EvaluationRoutingCandidateInput = {
+  display_name?: string
+  routing_prompt: string
+  small_model: number
+  large_model: number
+}
+
 export type EvaluationRunPayload = {
   name: string
-  dataset: number
+  dataset?: number
+  easy_dataset?: number
+  hard_dataset?: number
+  easy_ratio?: number | null
   evaluation_method: number | null
   model_ids: number[]
+  routing_candidates?: EvaluationRoutingCandidateInput[]
   config: Record<string, unknown>
   notes: string
+}
+
+export type DatasetSnapshotPreview = {
+  total_questions: number
+  easy_count: number
+  hard_count: number
 }
 
 export type EvaluationArtifacts = {
@@ -936,6 +994,24 @@ export function useApi() {
       request<Record<string, never>>(`/api/evaluation-datasets/${id}/`, {
         method: 'DELETE'
       }),
+    getDatasetSnapshotPreview: (query: {
+      dataset?: number
+      easyDataset?: number
+      hardDataset?: number
+      easyRatio?: number | null
+      seed?: number | null
+      totalQuestions?: number
+    }) =>
+      request<DatasetSnapshotPreview>(
+        `/api/evaluation-datasets/snapshot-preview/${buildQuery({
+          dataset: query.dataset,
+          easy_dataset: query.easyDataset,
+          hard_dataset: query.hardDataset,
+          easy_ratio: query.easyRatio ?? undefined,
+          seed: query.seed ?? undefined,
+          total_questions: query.totalQuestions
+        })}`
+      ),
     getEvaluationMethods: () => request<EvaluationMethod[]>('/api/evaluation-methods/'),
     createEvaluationMethod: (payload: EvaluationMethodPayload) =>
       request<EvaluationMethod>('/api/evaluation-methods/', {

@@ -6,6 +6,8 @@ from typing import Optional
 class LLMResponse:
     text: str
     raw: dict
+    usage: Optional[dict] = None
+    ttft_ms: Optional[int] = None
 
 
 class BaseLLMProvider:

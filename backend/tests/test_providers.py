@@ -1,9 +1,12 @@
+import json
+
 import pytest
 
 from apps.providers.anthropic import AnthropicProvider
 from apps.providers.gemini import GeminiProvider
 from apps.providers.openai import OpenAIProvider
 from apps.providers.openrouter import OpenRouterProvider
+from apps.providers.vllm import VLLMProvider
 
 
 class FakeResponse:
@@ -153,6 +156,121 @@ def test_anthropic_provider_extracts_message_text(monkeypatch):
     assert captured["json"]["model"] == "claude-haiku-4-5-20251001"
     assert captured["json"]["messages"] == [{"role": "user", "content": "hello"}]
     assert captured["json"]["temperature"] == 0.2
+
+
+class FakeStreamResponse:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        return iter(self.lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def _sse_lines(events):
+    lines = [f"data: {json.dumps(event, ensure_ascii=False)}".encode("utf-8") for event in events]
+    lines.append(b"data: [DONE]")
+    return lines
+
+
+def test_vllm_provider_streams_text_usage_and_ttft(monkeypatch):
+    captured = {}
+    events = [
+        {"choices": [{"delta": {"content": "A"}}]},
+        {"choices": [{"delta": {"content": "nswer: B"}}]},
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+        },
+    ]
+
+    def fake_post(url, *, headers, json, stream, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["stream"] = stream
+        captured["timeout"] = timeout
+        return FakeStreamResponse(_sse_lines(events))
+
+    monkeypatch.setattr("apps.providers.vllm.requests.post", fake_post)
+
+    response = VLLMProvider(api_key="vllm-token", base_url="https://runpod-host/v1").chat(
+        model="Qwen/Qwen3-8B",
+        messages=[{"role": "user", "content": "hello"}],
+        options={"temperature": 0.2, "max_tokens": 8},
+    )
+
+    assert response.text == "Answer: B"
+    assert response.usage == {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    assert response.ttft_ms is not None
+    assert captured["url"] == "https://runpod-host/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer vllm-token"
+    assert captured["json"]["model"] == "Qwen/Qwen3-8B"
+    assert captured["json"]["stream"] is True
+    assert captured["json"]["stream_options"] == {"include_usage": True}
+    assert captured["json"]["temperature"] == 0.2
+    assert captured["json"]["max_tokens"] == 8
+
+
+def test_vllm_provider_decodes_non_ascii_content_as_utf8(monkeypatch):
+    # 서버가 응답 헤더에 charset을 명시하지 않아도(예: text/event-stream만) SSE 페이로드는
+    # 항상 UTF-8이므로 한글 등 비ASCII 응답이 깨지지 않아야 합니다.
+    events = [
+        {"choices": [{"delta": {"content": "정답"}}]},
+        {"choices": [{"delta": {"content": ": B"}}]},
+    ]
+
+    def fake_post(url, *, headers, json, stream, timeout):
+        return FakeStreamResponse(_sse_lines(events))
+
+    monkeypatch.setattr("apps.providers.vllm.requests.post", fake_post)
+
+    response = VLLMProvider(api_key="vllm-token", base_url="https://runpod-host/v1").chat(
+        model="Qwen/Qwen3-8B",
+        messages=[{"role": "user", "content": "hello"}],
+        options={},
+    )
+
+    assert response.text == "정답: B"
+
+
+def test_vllm_provider_does_not_require_api_key():
+    provider = VLLMProvider(api_key="", base_url="https://runpod-host/v1")
+    assert provider.api_key == ""
+
+
+def test_vllm_provider_fetch_kv_cache_usage(monkeypatch):
+    captured = {}
+
+    class FakeMetricsResponse:
+        text = (
+            "# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage.\n"
+            "# TYPE vllm:gpu_cache_usage_perc gauge\n"
+            'vllm:gpu_cache_usage_perc{model_name="Qwen/Qwen3-8B"} 0.42\n'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, timeout):
+        captured["url"] = url
+        return FakeMetricsResponse()
+
+    monkeypatch.setattr("apps.providers.vllm.requests.get", fake_get)
+
+    provider = VLLMProvider(api_key="", base_url="https://runpod-host/v1")
+    usage = provider.fetch_kv_cache_usage()
+
+    assert usage == 0.42
+    assert captured["url"] == "https://runpod-host/metrics"
 
 
 def test_external_providers_require_api_key():

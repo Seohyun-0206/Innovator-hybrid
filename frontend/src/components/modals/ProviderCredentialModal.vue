@@ -28,7 +28,8 @@ const form = reactive<ProviderCredentialPayload>({
 })
 
 const isOllama = computed(() => form.provider === 'ollama')
-const requiresAccessToken = computed(() => !isOllama.value)
+const isSelfHosted = computed(() => ['ollama', 'vllm'].includes(form.provider))
+const requiresAccessToken = computed(() => !isSelfHosted.value)
 const canTestConnection = computed(() => Boolean(form.base_url && (!requiresAccessToken.value || form.access_token)))
 
 watch(
@@ -91,26 +92,27 @@ async function testConnection() {
         <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Provider</span>
-            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']" />
+            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic', 'vllm']" />
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">표시 이름</span>
-            <input v-model="form.display_name" required :placeholder="isOllama ? 'RunPod Ollama' : 'OpenAI Production'" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50" />
+            <input v-model="form.display_name" required :placeholder="isSelfHosted ? 'RunPod vLLM' : 'OpenAI Production'" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50" />
           </label>
           <label class="block md:col-span-2">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Base URL</span>
-            <input v-model="form.base_url" required :placeholder="isOllama ? 'https://your-runpod-host.proxy.runpod.net' : 'https://openrouter.ai/api/v1'" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50" />
+            <input v-model="form.base_url" required :placeholder="isSelfHosted ? 'https://your-runpod-host.proxy.runpod.net/v1' : 'https://openrouter.ai/api/v1'" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50" />
           </label>
           <label class="block md:col-span-2">
-            <span class="mb-1.5 block text-xs font-medium text-zinc-400">접근 토큰 {{ isOllama ? '(선택)' : '' }}</span>
+            <span class="mb-1.5 block text-xs font-medium text-zinc-400">접근 토큰 {{ isSelfHosted ? '(선택)' : '' }}</span>
             <input
               v-model="form.access_token"
               :required="!isEdit && requiresAccessToken"
               type="password"
-              :placeholder="isEdit ? `비워두면 ${credential?.access_token_masked || '현재 토큰'} 유지` : isOllama ? 'RunPod/proxy에서 필요한 경우 Bearer token 입력' : 'API key 또는 access token'"
+              :placeholder="isEdit ? `비워두면 ${credential?.access_token_masked || '현재 토큰'} 유지` : isSelfHosted ? 'RunPod/proxy에서 필요한 경우 Bearer token 입력' : 'API key 또는 access token'"
               class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50"
             />
             <p v-if="isOllama" class="mt-1 text-xs text-zinc-500">RunPod Ollama는 보통 이 Base URL 아래의 /api/chat, /api/tags 같은 Ollama API 경로를 사용합니다.</p>
+            <p v-else-if="form.provider === 'vllm'" class="mt-1 text-xs text-zinc-500">RunPod vLLM은 OpenAI 호환 서버이므로 Base URL은 보통 /v1로 끝나야 합니다 (예: .../v1/chat/completions).</p>
             <p v-else-if="isEdit" class="mt-1 text-xs text-zinc-500">새 토큰을 입력하면 저장된 인증 토큰이 교체됩니다.</p>
           </label>
           <label class="flex items-center gap-3 text-sm font-medium text-zinc-400">

@@ -25,7 +25,7 @@ const resultOptions = computed<SelectOption[]>(() => {
     { value: '', label: '전체 결과' },
     ...results.map((result) => ({
       value: String(result.id),
-      label: `${result.model_display_name} · ${result.status}`,
+      label: `${result.result_type === 'routing' ? result.candidate_label : result.model_display_name} · ${result.status}`,
     })),
   ]
 })
@@ -36,14 +36,17 @@ const filteredItems = computed(() => {
     (item) =>
       !query ||
       item.question.toLowerCase().includes(query) ||
-      item.model_display_name.toLowerCase().includes(query) ||
+      (item.model_display_name ?? '').toLowerCase().includes(query) ||
       item.dataset_name.toLowerCase().includes(query) ||
       item.subject.toLowerCase().includes(query) ||
       item.category.toLowerCase().includes(query) ||
       item.raw_output.toLowerCase().includes(query) ||
+      item.router_output.toLowerCase().includes(query) ||
       item.error.toLowerCase().includes(query)
   )
 })
+
+const hasRouterOutputs = computed(() => filteredItems.value.some((item) => item.router_output))
 
 async function loadRuns() {
   runs.value = await api.getEvaluationRuns()
@@ -107,6 +110,7 @@ onMounted(async () => {
         <th class="table-th">정답/예측</th>
         <th class="table-th">상태</th>
         <th class="table-th">토큰/지연</th>
+        <th v-if="hasRouterOutputs" class="table-th">Router Output</th>
         <th class="table-th">Raw Output</th>
       </template>
       <template #empty>
@@ -140,6 +144,10 @@ onMounted(async () => {
         <td class="whitespace-nowrap px-5 py-3.5 text-sm text-zinc-300">
           <p>{{ item.input_tokens }} / {{ item.output_tokens }} tok</p>
           <p class="text-xs text-zinc-500">{{ item.latency_ms ?? '-' }}ms</p>
+        </td>
+        <td v-if="hasRouterOutputs" class="px-5 py-3.5">
+          <pre v-if="item.router_output" class="code-panel max-h-32 max-w-xs whitespace-pre-wrap rounded p-2">{{ item.router_output }}</pre>
+          <span v-else class="text-xs text-zinc-600">-</span>
         </td>
         <td class="px-5 py-3.5">
           <pre class="code-panel max-h-32 max-w-md whitespace-pre-wrap rounded p-2">{{ item.raw_output || '-' }}</pre>

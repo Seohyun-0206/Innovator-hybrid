@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 from apps.accounts.audit import record_audit_log
 from apps.accounts.permissions import HasScreenAccess
 from apps.catalog.credentials import get_provider_access_token, get_provider_base_url
-from apps.catalog.connectivity import check_models_connectivity, validate_models_available
+from apps.catalog.connectivity import check_models_connectivity, collect_run_models, validate_models_available
 from apps.catalog.draft import generate_draft, get_tier_recommendations, save_draft_as_policy
 from apps.catalog.evaluation import PilotEvaluationRunner
 from apps.catalog.provider_models import fetch_provider_models, humanize_model_name, parse_provider_models
@@ -167,6 +167,43 @@ class EvaluationDatasetDetailView(AuditCrudMixin, generics.RetrieveUpdateDestroy
     permission_classes = [HasScreenAccess]
     required_screen = "evaluation-datasets"
     audit_resource_type = "evaluation_dataset"
+
+
+class EvaluationDatasetSnapshotPreviewView(APIView):
+    """실험 생성 화면의 Dataset Preview용 — 저장 없이 총/Easy/Hard 문항 수만 계산해서 돌려줍니다.
+    실제 실험 생성 시 스냅샷을 만드는 것과 완전히 같은 계산 함수를 쓰므로 숫자가 어긋나지 않습니다."""
+
+    permission_classes = [HasScreenAccess]
+    required_screen = "evaluation-runs"
+
+    def get(self, request):
+        dataset_id = request.query_params.get("dataset")
+        easy_dataset_id = request.query_params.get("easy_dataset")
+        hard_dataset_id = request.query_params.get("hard_dataset")
+        if not dataset_id and not (easy_dataset_id and hard_dataset_id):
+            return Response(
+                {"detail": "dataset 쿼리 파라미터 또는 easy_dataset/hard_dataset 쿼리 파라미터가 필요합니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dataset = generics.get_object_or_404(EvaluationDataset, pk=dataset_id) if dataset_id else None
+        easy_dataset = generics.get_object_or_404(EvaluationDataset, pk=easy_dataset_id) if easy_dataset_id else None
+        hard_dataset = generics.get_object_or_404(EvaluationDataset, pk=hard_dataset_id) if hard_dataset_id else None
+
+        easy_ratio_param = request.query_params.get("easy_ratio")
+        easy_ratio = int(easy_ratio_param) if easy_ratio_param not in (None, "") else None
+        seed_param = request.query_params.get("seed")
+        seed = int(seed_param) if seed_param not in (None, "") else None
+        total_questions = int(request.query_params.get("total_questions") or 20)
+
+        counts = PilotEvaluationRunner().preview_snapshot_counts(
+            dataset=dataset,
+            easy_dataset=easy_dataset,
+            hard_dataset=hard_dataset,
+            easy_ratio=easy_ratio,
+            seed=seed,
+            total_questions=total_questions,
+        )
+        return Response(counts)
 
 
 class EvaluationMethodListView(AuditCrudMixin, generics.ListCreateAPIView):
@@ -375,7 +412,7 @@ class EvaluationModelAvailabilityView(APIView):
                 EvaluationRun.objects.prefetch_related("models"),
                 pk=int(run_id),
             )
-            models = list(run.models.select_related("provider_credential").all())
+            models = collect_run_models(run)
         elif model_ids:
             models = list(LLMModel.objects.filter(id__in=model_ids).select_related("provider_credential"))
         else:
@@ -415,7 +452,7 @@ class EvaluationRunExecuteView(APIView):
         if run.status == "running":
             return Response({"detail": "이미 실행 중인 평가입니다."}, status=status.HTTP_400_BAD_REQUEST)
 
-        run_models = list(run.models.select_related("provider_credential").all())
+        run_models = collect_run_models(run)
         if not run_models:
             return Response({"detail": "평가 대상 모델이 없습니다."}, status=status.HTTP_400_BAD_REQUEST)
 

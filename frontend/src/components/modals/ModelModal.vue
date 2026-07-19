@@ -16,8 +16,8 @@ const emit = defineEmits<{
 }>()
 
 const isEdit = computed(() => Boolean(props.model))
-const credentialProviders = ['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']
-const remoteCapableProviders = ['ollama']
+const credentialProviders = ['ollama', 'openai', 'gemini', 'openrouter', 'anthropic', 'vllm']
+const remoteCapableProviders = ['ollama', 'vllm']
 const usesCredential = computed(() => credentialProviders.includes(form.provider))
 const matchingCredentials = computed(() =>
   props.credentials.filter((credential) => credential.provider === form.provider)
@@ -88,7 +88,7 @@ watch(
 watch(
   () => form.provider_credential,
   () => {
-    if (form.provider === 'ollama' && form.provider_credential) {
+    if (remoteCapableProviders.includes(form.provider) && form.provider_credential) {
       form.privacy_level = 'external'
     }
   }
@@ -133,7 +133,7 @@ const credentialIdStr = computed({
         <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Provider</span>
-            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic']" />
+            <AppSelect v-model="form.provider" :options="['ollama', 'openai', 'gemini', 'openrouter', 'anthropic', 'vllm']" />
           </label>
           <label class="block">
             <span class="mb-1.5 block text-xs font-medium text-zinc-400">Role</span>

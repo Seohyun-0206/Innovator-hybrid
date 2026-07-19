@@ -3,6 +3,7 @@ from apps.providers.gemini import GeminiProvider
 from apps.providers.ollama import OllamaProvider
 from apps.providers.openai import OpenAIProvider
 from apps.providers.openrouter import OpenRouterProvider
+from apps.providers.vllm import VLLMProvider
 
 
 class ProviderRegistry:
@@ -13,6 +14,7 @@ class ProviderRegistry:
             "gemini": GeminiProvider,
             "openrouter": OpenRouterProvider,
             "anthropic": AnthropicProvider,
+            "vllm": VLLMProvider,
         }
         self._providers = {}
 

@@ -17,6 +17,7 @@ from apps.accounts.views import (
 from apps.catalog.views import (
     EvaluationDatasetDetailView,
     EvaluationDatasetListView,
+    EvaluationDatasetSnapshotPreviewView,
     EvaluationItemResultListView,
     EvaluationMethodDetailView,
     EvaluationMethodListView,
@@ -85,6 +86,7 @@ urlpatterns = [
     path("api/models/connectivity/", LLMModelConnectivityView.as_view(), name="model-connectivity"),
     path("api/models/<int:pk>/", LLMModelDetailView.as_view(), name="model-detail"),
     path("api/evaluation-datasets/", EvaluationDatasetListView.as_view(), name="evaluation-datasets"),
+    path("api/evaluation-datasets/snapshot-preview/", EvaluationDatasetSnapshotPreviewView.as_view(), name="evaluation-dataset-snapshot-preview"),
     path("api/evaluation-datasets/<int:pk>/", EvaluationDatasetDetailView.as_view(), name="evaluation-dataset-detail"),
     path("api/evaluation-methods/", EvaluationMethodListView.as_view(), name="evaluation-methods"),
     path("api/evaluation-methods/<int:pk>/", EvaluationMethodDetailView.as_view(), name="evaluation-method-detail"),
