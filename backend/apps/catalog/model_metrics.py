@@ -178,6 +178,18 @@ def build_mcq_prompt(question: EvaluationQuestion, config: dict) -> str:
     )
 
 
+def build_generation_prompt(question: EvaluationQuestion, config: dict) -> str:
+    return question.question
+
+
+def is_generation_correct(output_text: str, reference_answer: str) -> bool:
+    """생성형 채점 v1: 참조 정답 텍스트가 모델 출력에 부분 문자열로 포함되는지만 확인합니다."""
+    reference = reference_answer.strip().lower()
+    if not reference:
+        return False
+    return reference in output_text.strip().lower()
+
+
 def build_provider_options(provider: str, config: dict) -> dict:
     temperature = config.get("temperature", 0)
     max_tokens = int(config.get("max_tokens") or 8)
@@ -246,7 +258,7 @@ def decimal_percentile(values: list, pct: int) -> Optional[Decimal]:
     return Decimal(str(round(value, 3)))
 
 
-def load_questions(dataset) -> list[EvaluationQuestion]:
+def load_questions(dataset, method_type: str = "multiple_choice") -> list[EvaluationQuestion]:
     """EvaluationDataset 하나를 파싱해서 문항 목록을 만듭니다."""
     raw_content = dataset.raw_content.strip()
     if not raw_content and dataset.source_url:
@@ -257,16 +269,16 @@ def load_questions(dataset) -> list[EvaluationQuestion]:
         return []
     data_format = getattr(dataset, "data_format", "") or dataset.dataset_type
     if data_format == "csv":
-        questions = parse_csv(raw_content)
+        questions = parse_csv(raw_content, method_type)
     else:
-        questions = parse_jsonl(raw_content) or parse_csv(raw_content)
+        questions = parse_jsonl(raw_content, method_type) or parse_csv(raw_content, method_type)
     if questions and dataset.question_count != len(questions):
         dataset.question_count = len(questions)
         dataset.save(update_fields=["question_count", "updated_at"])
     return questions
 
 
-def parse_jsonl(raw_content: str) -> list[EvaluationQuestion]:
+def parse_jsonl(raw_content: str, method_type: str = "multiple_choice") -> list[EvaluationQuestion]:
     questions = []
     for line in raw_content.splitlines():
         line = line.strip()
@@ -277,7 +289,9 @@ def parse_jsonl(raw_content: str) -> list[EvaluationQuestion]:
         except json.JSONDecodeError:
             return []
         question = payload.get("question") or payload.get("prompt") or payload.get("input") or ""
-        answer = str(payload.get("answer") or payload.get("target") or payload.get("label") or "").strip().upper()
+        answer_raw = str(payload.get("answer") or payload.get("target") or payload.get("label") or "").strip()
+        # 생성형은 정답이 문장 전체이므로 한 글자로 자르지 않고 원문을 그대로 보존합니다.
+        answer = answer_raw if method_type == "generation" else answer_raw.upper()[:1]
         choices = payload.get("choices") or payload.get("options") or []
         if isinstance(choices, dict):
             choices = [choices.get(key, "") for key in ("A", "B", "C", "D")]
@@ -286,7 +300,7 @@ def parse_jsonl(raw_content: str) -> list[EvaluationQuestion]:
                 EvaluationQuestion(
                     question=question,
                     choices=[str(choice) for choice in choices],
-                    answer=answer[:1],
+                    answer=answer,
                     category=str(payload.get("category") or ""),
                     subject=str(payload.get("subject") or ""),
                     difficulty=str(payload.get("difficulty") or "").strip().lower(),
@@ -295,29 +309,30 @@ def parse_jsonl(raw_content: str) -> list[EvaluationQuestion]:
     return questions
 
 
-def parse_csv(raw_content: str) -> list[EvaluationQuestion]:
+def parse_csv(raw_content: str, method_type: str = "multiple_choice") -> list[EvaluationQuestion]:
     rows = list(csv.reader(StringIO(raw_content)))
     if not rows:
         return []
     header = [column.strip().lower() for column in rows[0]]
     if {"question", "answer"}.issubset(set(header)):
-        return parse_header_csv(rows, header)
+        return parse_header_csv(rows, header, method_type)
     return parse_mmlu_csv(rows)
 
 
-def parse_header_csv(rows: list[list[str]], header: list[str]) -> list[EvaluationQuestion]:
+def parse_header_csv(rows: list[list[str]], header: list[str], method_type: str = "multiple_choice") -> list[EvaluationQuestion]:
     questions = []
     for row in rows[1:]:
         data = {header[index]: value for index, value in enumerate(row) if index < len(header)}
         question = data.get("question", "")
-        answer = data.get("answer", "").strip().upper()
+        answer_raw = data.get("answer", "").strip()
+        answer = answer_raw if method_type == "generation" else answer_raw.upper()[:1]
         choices = [data.get(key, "") for key in ("a", "b", "c", "d")]
         if question and answer:
             questions.append(
                 EvaluationQuestion(
                     question=question,
                     choices=choices,
-                    answer=answer[:1],
+                    answer=answer,
                     category=data.get("category", ""),
                     subject=data.get("subject", ""),
                     difficulty=data.get("difficulty", "").strip().lower(),

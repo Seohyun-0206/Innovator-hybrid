@@ -83,6 +83,14 @@ class FakeVLLMHandler(BaseHTTPRequestHandler):
         prompt = messages[-1]["content"] if messages else ""
         stream = bool(payload.get("stream", False))
 
+        print(f"[fake-vllm] === incoming request ===")
+        print(f"[fake-vllm] model: {model}")
+        print(f"[fake-vllm] messages ({len(messages)}):")
+        for message in messages:
+            print(f"[fake-vllm]   [{message.get('role')}] {message.get('content')}")
+        print(f"[fake-vllm] prompt (last message content):\n{prompt}")
+        print(f"[fake-vllm] =========================")
+
         reply_text = self._build_reply(prompt)
         prompt_tokens = max(1, len(prompt.split()))
         completion_tokens = max(1, len(reply_text.split()))

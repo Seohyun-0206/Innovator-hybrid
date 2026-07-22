@@ -658,7 +658,7 @@ class ProviderCredentialDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class ProviderCredentialTestSerializer(serializers.Serializer):
-    provider = serializers.ChoiceField(choices=["ollama", "openai", "gemini", "openrouter", "anthropic"])
+    provider = serializers.ChoiceField(choices=["ollama", "openai", "gemini", "openrouter", "anthropic", "vllm"])
     base_url = serializers.CharField()
     access_token = serializers.CharField(allow_blank=True, required=False)
 

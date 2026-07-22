@@ -6,6 +6,7 @@ from django.utils import timezone
 from apps.catalog.model_metrics import (
     EvaluationQuestion,
     LatencyStats,
+    build_generation_prompt,
     build_mcq_prompt,
     build_provider_options,
     decimal_percentile,
@@ -13,6 +14,7 @@ from apps.catalog.model_metrics import (
     estimate_tokens,
     execute_model_call,
     extract_answer,
+    is_generation_correct,
     is_strict_answer,
     load_questions,
     percentile,
@@ -89,6 +91,7 @@ class PilotEvaluationRunner:
         seed,
         total_questions,
     ) -> EvaluationDatasetSnapshot:
+        method_type = run.evaluation_method.method_type if run.evaluation_method_id else "multiple_choice"
         selection = self.select_snapshot_questions(
             dataset=dataset,
             easy_dataset=easy_dataset,
@@ -96,6 +99,7 @@ class PilotEvaluationRunner:
             easy_ratio=easy_ratio,
             seed=seed,
             total_questions=total_questions,
+            method_type=method_type,
         )
         return EvaluationDatasetSnapshot.objects.create(
             run=run,
@@ -126,16 +130,18 @@ class PilotEvaluationRunner:
             "hard_count": selection["hard_count"],
         }
 
-    def select_snapshot_questions(self, *, dataset, easy_dataset=None, hard_dataset=None, easy_ratio, seed, total_questions) -> dict:
+    def select_snapshot_questions(
+        self, *, dataset, easy_dataset=None, hard_dataset=None, easy_ratio, seed, total_questions, method_type="multiple_choice"
+    ) -> dict:
         total = int(total_questions or 20)
         total = max(1, min(total, 500))
         if easy_dataset is not None and hard_dataset is not None:
-            easy_questions = load_questions(easy_dataset)
-            hard_questions = load_questions(hard_dataset)
+            easy_questions = load_questions(easy_dataset, method_type)
+            hard_questions = load_questions(hard_dataset, method_type)
             resolved_ratio = 50 if easy_ratio is None else int(easy_ratio)
             selected = select_questions_from_pools(easy_questions, hard_questions, resolved_ratio, total, seed)
         else:
-            questions = load_questions(dataset)
+            questions = load_questions(dataset, method_type)
             resolved_ratio = easy_ratio
             selected = select_questions_by_difficulty(questions, easy_ratio, total, seed)
         easy_count = sum(1 for question in selected if question.difficulty == "easy")
@@ -149,6 +155,7 @@ class PilotEvaluationRunner:
 
     def evaluate_model_result(self, result, questions: list[EvaluationQuestion], config: dict):
         model = result.model
+        method_type = result.run.evaluation_method.method_type if result.run.evaluation_method_id else "multiple_choice"
         result.status = "running"
         result.error_message = ""
         result.save(update_fields=["status", "error_message", "updated_at"])
@@ -180,7 +187,7 @@ class PilotEvaluationRunner:
         kv_cache_thread, kv_cache_stop = start_kv_cache_poller(provider, kv_cache_samples)
 
         for item_index, question in enumerate(questions, start=1):
-            prompt = build_mcq_prompt(question, config)
+            prompt = self.build_item_prompt(method_type, question, config)
             prompt_tokens = estimate_tokens(prompt)
             final_record = None
 
@@ -193,10 +200,7 @@ class PilotEvaluationRunner:
                     prompt_tokens_estimate=prompt_tokens,
                 )
                 prompt_tokens = call.input_tokens
-                extracted = extract_answer(call.output_text)
-                strict_answer = is_strict_answer(call.output_text)
-                is_correct = extracted == question.answer
-                ok = bool(extracted)
+                extracted, strict_answer, is_correct, ok = self.grade_output(method_type, call.output_text, question)
                 if call.error:
                     result.error_message = call.error
 
@@ -208,7 +212,7 @@ class PilotEvaluationRunner:
                     item_index=item_index,
                     question=question.question,
                     choices=question.choices,
-                    gold=question.answer,
+                    gold=question.answer[:16],
                     predicted_choice=extracted,
                     strict_ok=strict_answer,
                     is_correct=is_correct,
@@ -291,6 +295,24 @@ class PilotEvaluationRunner:
         )
         result.save()
 
+    def build_item_prompt(self, method_type: str, question: EvaluationQuestion, config: dict) -> str:
+        if method_type == "generation":
+            return build_generation_prompt(question, config)
+        return build_mcq_prompt(question, config)
+
+    def grade_output(self, method_type: str, output_text: str, question: EvaluationQuestion) -> tuple[str, bool, bool, bool]:
+        """(predicted_choice, strict_ok, is_correct, ok) 튜플을 돌려줍니다.
+        generation은 참조 정답 부분 문자열 매치로 채점하므로 predicted_choice/strict_ok는 MCQ 전용 개념이라 비워둡니다."""
+        if method_type == "generation":
+            is_correct = is_generation_correct(output_text, question.answer)
+            ok = bool(output_text.strip())
+            return "", False, is_correct, ok
+        extracted = extract_answer(output_text)
+        strict_answer = is_strict_answer(output_text)
+        is_correct = extracted == question.answer
+        ok = bool(extracted)
+        return extracted, strict_answer, is_correct, ok
+
     def build_router_prompt(self, routing_prompt: str, question: EvaluationQuestion) -> str:
         if "{question}" in routing_prompt:
             return routing_prompt.replace("{question}", question.question)
@@ -304,6 +326,7 @@ class PilotEvaluationRunner:
 
     def evaluate_routing_result(self, result, questions: list[EvaluationQuestion], config: dict):
         routing_config = getattr(result, "routing_config", None)
+        method_type = result.run.evaluation_method.method_type if result.run.evaluation_method_id else "multiple_choice"
         result.status = "running"
         result.error_message = ""
         result.save(update_fields=["status", "error_message", "updated_at"])
@@ -370,7 +393,7 @@ class PilotEvaluationRunner:
             provider = get_provider_for(chosen_model)
             estimated_cost += estimate_cost(small_model, router_call.input_tokens, router_call.output_tokens)
 
-            prompt = build_mcq_prompt(question, config)
+            prompt = self.build_item_prompt(method_type, question, config)
             prompt_tokens = estimate_tokens(prompt)
             final_record = None
 
@@ -383,10 +406,7 @@ class PilotEvaluationRunner:
                     prompt_tokens_estimate=prompt_tokens,
                 )
                 prompt_tokens = call.input_tokens
-                extracted = extract_answer(call.output_text)
-                strict_answer = is_strict_answer(call.output_text)
-                is_correct = extracted == question.answer
-                ok = bool(extracted)
+                extracted, strict_answer, is_correct, ok = self.grade_output(method_type, call.output_text, question)
                 if call.error:
                     result.error_message = call.error
 
@@ -398,7 +418,7 @@ class PilotEvaluationRunner:
                     item_index=item_index,
                     question=question.question,
                     choices=question.choices,
-                    gold=question.answer,
+                    gold=question.answer[:16],
                     predicted_choice=extracted,
                     strict_ok=strict_answer,
                     is_correct=is_correct,

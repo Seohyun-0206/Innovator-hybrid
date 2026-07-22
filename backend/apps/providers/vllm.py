@@ -90,8 +90,11 @@ class VLLMProvider(BaseLLMProvider):
         요청 단위 지표가 아니라 서버의 현재 순간 상태이므로, 평가 루프 중
         주기적으로 폴링해 min/avg/max로 집계하는 용도로 씁니다."""
         metrics_url = f"{self._metrics_root()}/metrics"
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            response = requests.get(metrics_url, timeout=10)
+            response = requests.get(metrics_url, headers=headers, timeout=10)
             response.raise_for_status()
         except requests.RequestException:
             return None

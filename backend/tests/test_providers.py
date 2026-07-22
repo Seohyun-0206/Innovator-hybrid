@@ -260,8 +260,9 @@ def test_vllm_provider_fetch_kv_cache_usage(monkeypatch):
         def raise_for_status(self):
             return None
 
-    def fake_get(url, timeout):
+    def fake_get(url, headers=None, timeout=None):
         captured["url"] = url
+        captured["headers"] = headers
         return FakeMetricsResponse()
 
     monkeypatch.setattr("apps.providers.vllm.requests.get", fake_get)
@@ -271,6 +272,29 @@ def test_vllm_provider_fetch_kv_cache_usage(monkeypatch):
 
     assert usage == 0.42
     assert captured["url"] == "https://runpod-host/metrics"
+    assert captured["headers"] == {}
+
+
+def test_vllm_provider_fetch_kv_cache_usage_sends_auth_header(monkeypatch):
+    """RunPod처럼 인증이 필요한 vLLM 엔드포인트는 /metrics 요청에도 Authorization 헤더가 있어야 합니다."""
+    captured = {}
+
+    class FakeMetricsResponse:
+        text = 'vllm:gpu_cache_usage_perc{model_name="Qwen/Qwen3-8B"} 0.42\n'
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["headers"] = headers
+        return FakeMetricsResponse()
+
+    monkeypatch.setattr("apps.providers.vllm.requests.get", fake_get)
+
+    provider = VLLMProvider(api_key="secret-token", base_url="https://runpod-host/v1")
+    provider.fetch_kv_cache_usage()
+
+    assert captured["headers"] == {"Authorization": "Bearer secret-token"}
 
 
 def test_external_providers_require_api_key():
