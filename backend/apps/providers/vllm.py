@@ -10,6 +10,10 @@ from apps.providers.base import BaseLLMProvider, LLMResponse
 
 
 class VLLMProvider(BaseLLMProvider):
+    # vLLM이 V0 엔진에서 V1 엔진으로 넘어가면서 KV 캐시 사용률 지표 이름이 바뀌었습니다.
+    # 두 이름 다 확인해서, 어느 엔진 버전이든 값을 읽어올 수 있게 합니다.
+    KV_CACHE_METRIC_NAMES = ("vllm:gpu_cache_usage_perc", "vllm:kv_cache_usage_perc")
+
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = api_key if api_key is not None else get_vllm_access_token()
         if base_url is not None:
@@ -24,6 +28,11 @@ class VLLMProvider(BaseLLMProvider):
         payload = {
             "model": model,
             "messages": messages,
+            # Qwen3 같은 reasoning 모델은 기본으로 <think>...</think> 추론을 답 앞에 붙이는데,
+            # 평가/채점 프롬프트처럼 max_tokens가 짧은 상황에서는 추론이 끝나기 전에 응답이
+            # 잘려 실제 답이 아예 안 나올 수 있습니다. chat_template_kwargs를 지원하지 않는
+            # 모델(비-Qwen3)에는 무시되는 필드라 항상 꺼둡니다.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         payload.update(options or {})
 
@@ -105,12 +114,12 @@ class VLLMProvider(BaseLLMProvider):
             return self.base_url[: -len("/v1")]
         return self.base_url
 
-    @staticmethod
-    def _parse_kv_cache_usage(metrics_text: str) -> Optional[float]:
+    @classmethod
+    def _parse_kv_cache_usage(cls, metrics_text: str) -> Optional[float]:
         for line in metrics_text.splitlines():
             if line.startswith("#"):
                 continue
-            if line.startswith("vllm:gpu_cache_usage_perc"):
+            if line.startswith(cls.KV_CACHE_METRIC_NAMES):
                 try:
                     return float(line.rsplit(" ", 1)[-1])
                 except ValueError:

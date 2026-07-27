@@ -275,6 +275,28 @@ def test_vllm_provider_fetch_kv_cache_usage(monkeypatch):
     assert captured["headers"] == {}
 
 
+def test_vllm_provider_fetch_kv_cache_usage_supports_v1_engine_metric_name(monkeypatch):
+    class FakeMetricsResponse:
+        text = (
+            "# HELP vllm:kv_cache_usage_perc KV-cache usage.\n"
+            "# TYPE vllm:kv_cache_usage_perc gauge\n"
+            'vllm:kv_cache_usage_perc{model_name="Qwen/Qwen3-8B"} 0.57\n'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, headers=None, timeout=None):
+        return FakeMetricsResponse()
+
+    monkeypatch.setattr("apps.providers.vllm.requests.get", fake_get)
+
+    provider = VLLMProvider(api_key="", base_url="https://runpod-host/v1")
+    usage = provider.fetch_kv_cache_usage()
+
+    assert usage == 0.57
+
+
 def test_vllm_provider_fetch_kv_cache_usage_sends_auth_header(monkeypatch):
     """RunPod처럼 인증이 필요한 vLLM 엔드포인트는 /metrics 요청에도 Authorization 헤더가 있어야 합니다."""
     captured = {}

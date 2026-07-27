@@ -13,6 +13,7 @@ import requests
 
 
 ANSWER_PATTERN = re.compile(r"\b([ABCD])\b", re.IGNORECASE)
+THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 KV_CACHE_POLL_INTERVAL_SECONDS = 1.0
 
 
@@ -187,7 +188,7 @@ def is_generation_correct(output_text: str, reference_answer: str) -> bool:
     reference = reference_answer.strip().lower()
     if not reference:
         return False
-    return reference in output_text.strip().lower()
+    return reference in strip_thinking_output(output_text).lower()
 
 
 def build_provider_options(provider: str, config: dict) -> dict:
@@ -218,13 +219,25 @@ def build_provider_options(provider: str, config: dict) -> dict:
     }
 
 
+def strip_thinking_output(text: str) -> str:
+    """Qwen3 등 reasoning 모델이 실제 답 앞에 내보내는 <think>...</think> 블록을 제거합니다.
+    MCQ 평가는 max_tokens를 8 정도로 짧게 잡는데, 그 예산을 <think> 추론이 다 써버리면
+    닫는 태그 없이 응답이 끝나버립니다 — 그 경우 실제 답은 아직 나오지 않은 것이므로,
+    추론 내용 속 글자를 답으로 잘못 인식하지 않도록 빈 문자열을 돌려줍니다."""
+    cleaned = THINK_BLOCK_PATTERN.sub("", text)
+    open_index = cleaned.lower().find("<think>")
+    if open_index != -1:
+        cleaned = cleaned[:open_index]
+    return cleaned.strip()
+
+
 def extract_answer(text: str) -> str:
-    match = ANSWER_PATTERN.search(text.strip())
+    match = ANSWER_PATTERN.search(strip_thinking_output(text))
     return match.group(1).upper() if match else ""
 
 
 def is_strict_answer(text: str) -> bool:
-    return bool(re.fullmatch(r"\s*[ABCD]\s*", text.strip(), re.IGNORECASE))
+    return bool(re.fullmatch(r"\s*[ABCD]\s*", strip_thinking_output(text), re.IGNORECASE))
 
 
 def estimate_tokens(text: str) -> int:

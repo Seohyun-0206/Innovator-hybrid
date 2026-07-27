@@ -23,6 +23,7 @@ from apps.catalog.model_metrics import (
     select_questions_from_pools,
     start_kv_cache_poller,
     stop_kv_cache_poller,
+    strip_thinking_output,
 )
 from apps.catalog.models import EvaluationDatasetSnapshot, EvaluationItemResult, EvaluationRun
 from apps.providers.registry import ProviderRegistry
@@ -320,9 +321,10 @@ class PilotEvaluationRunner:
 
     def parse_router_choice(self, router_output_text: str) -> str:
         """Router(Small Model) 응답이 정확히 "large"일 때만 large로 라우팅합니다.
-        그 외(정확히 "small", 빈 응답, 부연 설명이 섞인 응답 등)는 모두 small로 처리합니다 —
-        Router 자신이 small_model이므로 판단이 애매할 때는 안전하게 자기 자신이 답합니다."""
-        return "large" if router_output_text.strip().lower() == "large" else "small"
+        그 외(정확히 "small", 빈 응답, 부연 설명이 섞인 응답, <think> 추론 블록 등)는
+        모두 small로 처리합니다 — Router 자신이 small_model이므로 판단이 애매할 때는
+        안전하게 자기 자신이 답합니다."""
+        return "large" if strip_thinking_output(router_output_text).lower() == "large" else "small"
 
     def evaluate_routing_result(self, result, questions: list[EvaluationQuestion], config: dict):
         routing_config = getattr(result, "routing_config", None)

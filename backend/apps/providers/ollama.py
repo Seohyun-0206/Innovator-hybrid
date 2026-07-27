@@ -28,6 +28,7 @@ class OllamaProvider(BaseLLMProvider):
                 "messages": messages,
                 "stream": False,
                 "options": options or {},
+                "think": False,
             },
             timeout=120,
         )
