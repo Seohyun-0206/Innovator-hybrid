@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { EditIcon, PlusIcon, RefreshCwIcon, SearchIcon, ServerIcon } from 'lucide-vue-next'
+import { EditIcon, PlusIcon, RefreshCwIcon, SearchIcon, ServerIcon, TrashIcon } from 'lucide-vue-next'
 import AdminDataTable from '../components/common/AdminDataTable.vue'
 import PaginationControls from '../components/common/PaginationControls.vue'
 import ModelModal from '../components/modals/ModelModal.vue'
@@ -150,6 +150,24 @@ async function disableModel(model: LLMModel) {
   closeModal()
   await loadModels()
   await refreshConnectivity()
+}
+
+async function deleteModel(model: LLMModel) {
+  if (
+    !confirm(
+      `"${model.display_name}" 모델을 삭제할까요?\n이 모델로 실행한 단일 모델 평가 결과(문항별 로그 포함)도 함께 삭제됩니다. 되돌릴 수 없습니다.`
+    )
+  ) {
+    return
+  }
+  error.value = ''
+  try {
+    await api.deleteModel(model.id)
+    await loadModels()
+    await refreshConnectivity()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '모델을 삭제하지 못했습니다.'
+  }
 }
 
 onMounted(async () => {
@@ -314,14 +332,24 @@ onBeforeUnmount(() => {
           </span>
         </td>
         <td class="whitespace-nowrap px-5 py-3.5">
-          <button
-            class="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
-            title="수정"
-            type="button"
-            @click.stop="openEditModal(model)"
-          >
-            <EditIcon class="h-4 w-4" />
-          </button>
+          <div class="flex items-center gap-1">
+            <button
+              class="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+              title="수정"
+              type="button"
+              @click.stop="openEditModal(model)"
+            >
+              <EditIcon class="h-4 w-4" />
+            </button>
+            <button
+              class="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-red-900/40 hover:text-red-400"
+              title="삭제"
+              type="button"
+              @click.stop="deleteModel(model)"
+            >
+              <TrashIcon class="h-4 w-4" />
+            </button>
+          </div>
         </td>
       </tr>
 
