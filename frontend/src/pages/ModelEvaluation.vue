@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { BarChart3Icon, BeakerIcon, CoinsIcon, GaugeIcon, ListChecksIcon, RouteIcon, SearchIcon, ShieldCheckIcon } from 'lucide-vue-next'
+import { BarChart3Icon, BeakerIcon, CoinsIcon, DownloadIcon, GaugeIcon, ListChecksIcon, RouteIcon, SearchIcon, ShieldCheckIcon } from 'lucide-vue-next'
 import AdminDataTable from '../components/common/AdminDataTable.vue'
 import { EvaluationResult, EvaluationRun, useApi } from '../composables/useApi'
 
@@ -17,6 +17,7 @@ const loading = ref(false)
 const runSearchQuery = ref('')
 const modelSearchQuery = ref('')
 const selectedRunId = ref<number | null>(null)
+const downloadingItemLogs = ref(false)
 
 const filteredRuns = computed(() => {
   const query = runSearchQuery.value.trim().toLowerCase()
@@ -131,6 +132,18 @@ const scorecardMetricKeys = computed(() => {
 
 const hasScorecardMetrics = computed(() => scorecardMetricKeys.value.length > 0)
 const hasRoutingResults = computed(() => selectedRunResults.value.some((result) => result.result_type === 'routing'))
+
+const routingCandidateCards = computed(() =>
+  selectedRunResults.value
+    .filter((result) => result.result_type === 'routing')
+    .map((result) => ({
+      id: result.id,
+      label: result.candidate_label,
+      small: result.routing_config?.small_model_display_name ?? '-',
+      large: result.routing_config?.large_model_display_name ?? '-',
+      prompt: result.routing_config?.routing_prompt || '라우팅 프롬프트가 없습니다.',
+    }))
+)
 
 const metricColumns = computed<MetricColumn[]>(() => {
   const columns: MetricColumn[] = [
@@ -358,6 +371,92 @@ function formatDate(value: string | null) {
   return new Date(value).toLocaleString()
 }
 
+function csvEscape(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value)
+  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+  return text
+}
+
+function downloadCsv(filename: string, rows: unknown[][]) {
+  const csvBody = rows.map((row) => row.map(csvEscape).join(',')).join('\r\n')
+  const blob = new Blob(['﻿' + csvBody], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '_')
+}
+
+function downloadSummaryCsv() {
+  if (!selectedRun.value) return
+  const header = [
+    '후보명', '유형', 'Provider', '상태',
+    ...metricColumns.value.map((column) => column.label),
+    ...(hasRoutingResults.value ? ['Routing 분포', 'Router Latency p50/p95'] : []),
+    '문항수',
+    ...(hasScorecardMetrics.value ? ['Scorecard 역할'] : []),
+  ]
+  const rows = selectedRunResults.value.map((result) => [
+    result.result_type === 'routing' ? result.candidate_label : result.model_display_name,
+    resultTypeLabel(result),
+    result.result_type === 'routing' ? '-' : result.model_provider,
+    getStatusLabel(result.status),
+    ...metricColumns.value.map((column) => column.getValue(result)),
+    ...(hasRoutingResults.value
+      ? [result.result_type === 'routing' ? formatRoutingDistribution(result) : '-', formatRouterLatency(result)]
+      : []),
+    result.item_result_count || 0,
+    ...(hasScorecardMetrics.value ? [getRole(result)] : []),
+  ])
+  downloadCsv(`${sanitizeFilename(selectedRun.value.name)}_요약.csv`, [header, ...rows])
+}
+
+async function downloadItemLogsCsv() {
+  if (!selectedRun.value) return
+  downloadingItemLogs.value = true
+  try {
+    const items = await api.getEvaluationItemResults({ run: selectedRun.value.id })
+    const candidateLabelByResultId = new Map(
+      selectedRunResults.value.map((result) => [
+        result.id,
+        result.result_type === 'routing' ? result.candidate_label : result.model_display_name ?? '-',
+      ])
+    )
+    const header = [
+      '후보', '문항번호', '시도', '문제', '정답', '예측', '정답여부', 'Strict여부', '응답성공여부',
+      '입력토큰', '출력토큰', '지연(ms)', 'TTFT(ms)', 'Router Output', '원문 응답', '에러', 'Subject', 'Category',
+    ]
+    const rows = items.map((item) => [
+      candidateLabelByResultId.get(item.result) ?? item.model_display_name ?? '-',
+      item.item_index,
+      item.attempt,
+      item.question,
+      item.gold,
+      item.predicted_choice,
+      item.is_correct ? 'Y' : 'N',
+      item.strict_ok ? 'Y' : 'N',
+      item.ok ? 'Y' : 'N',
+      item.input_tokens,
+      item.output_tokens,
+      item.latency_ms ?? '',
+      item.ttft_ms ?? '',
+      item.router_output,
+      item.raw_output,
+      item.error,
+      item.subject,
+      item.category,
+    ])
+    downloadCsv(`${sanitizeFilename(selectedRun.value.name)}_문항로그.csv`, [header, ...rows])
+  } finally {
+    downloadingItemLogs.value = false
+  }
+}
+
 function collectAccuracyHighlights(field: 'category_accuracy' | 'subject_accuracy') {
   const pairs = new Map<string, number[]>()
   completedResults.value.forEach((result) => {
@@ -468,6 +567,18 @@ onMounted(loadPageData)
             <p class="mt-1 text-xs text-zinc-500">{{ card.sub }}</p>
           </div>
         </section>
+
+        <section v-if="hasRoutingResults" class="grid gap-4 grid-cols-1">
+          <div v-for="card in routingCandidateCards" :key="card.id" class="section-card-padded">
+            <div class="mb-3 flex items-center justify-between">
+              <p class="text-xs font-semibold uppercase tracking-widest text-zinc-500">라우팅 프롬프트</p>
+              <RouteIcon class="h-4 w-4 text-indigo-400" />
+            </div>
+            <p class="text-sm font-semibold text-zinc-100">{{ card.label }}</p>
+            <p class="mt-1 text-xs text-zinc-500">Small: {{ card.small }} / Large: {{ card.large }}</p>
+            <pre class="code-panel mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap rounded p-3 text-xs">{{ card.prompt }}</pre>
+          </div>
+        </section>
       </div>
     </section>
 
@@ -546,6 +657,22 @@ onMounted(loadPageData)
           type="text"
         />
       </div>
+      <button
+        type="button"
+        class="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+        :disabled="!selectedRun || !selectedRunResults.length"
+        @click="downloadSummaryCsv"
+      >
+        <DownloadIcon class="h-4 w-4" /> 결과 요약 CSV
+      </button>
+      <button
+        type="button"
+        class="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+        :disabled="!selectedRun || !selectedRunResults.length || downloadingItemLogs"
+        @click="downloadItemLogsCsv"
+      >
+        <DownloadIcon class="h-4 w-4" /> {{ downloadingItemLogs ? '내려받는 중...' : '문항별 로그 CSV' }}
+      </button>
     </div>
 
     <AdminDataTable :loading="loading" :is-empty="selectedRunResults.length === 0">

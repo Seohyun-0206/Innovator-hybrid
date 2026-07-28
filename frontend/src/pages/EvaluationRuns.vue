@@ -68,6 +68,7 @@ const runForm = reactive({
   max_tokens: 8,
   timeout_seconds: 120,
   retry: 0,
+  concurrency: 1,
   notes: '',
 })
 
@@ -500,6 +501,7 @@ async function createRun() {
         max_tokens: runForm.max_tokens,
         timeout_seconds: runForm.timeout_seconds,
         retry: runForm.retry,
+        concurrency: runForm.concurrency,
       },
       notes: runForm.notes,
     })
@@ -517,6 +519,7 @@ async function createRun() {
       max_tokens: 8,
       timeout_seconds: 120,
       retry: 0,
+      concurrency: 1,
       notes: '',
     })
     routingCandidates.value = []
@@ -1005,6 +1008,11 @@ onMounted(loadPageData)
               <label class="block">
                 <span class="ui-label">재시도 횟수</span>
                 <input v-model.number="runForm.retry" min="0" type="number" class="ui-input" />
+              </label>
+              <label class="block">
+                <span class="ui-label">동시 요청 수</span>
+                <!-- max는 백엔드 PilotEvaluationRunner.MAX_CONCURRENCY와 값 맞출 것 -->
+                <input v-model.number="runForm.concurrency" min="1" max="30" type="number" class="ui-input" />
               </label>
             </div>
           </details>

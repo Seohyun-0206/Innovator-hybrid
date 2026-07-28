@@ -1,4 +1,6 @@
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from decimal import Decimal
 
 from django.utils import timezone
@@ -6,6 +8,7 @@ from django.utils import timezone
 from apps.catalog.model_metrics import (
     EvaluationQuestion,
     LatencyStats,
+    ModelCallResult,
     build_generation_prompt,
     build_mcq_prompt,
     build_provider_options,
@@ -29,9 +32,44 @@ from apps.catalog.models import EvaluationDatasetSnapshot, EvaluationItemResult,
 from apps.providers.registry import ProviderRegistry
 
 
+@dataclass(frozen=True)
+class ItemAttemptOutcome:
+    """문항 1개의 attempt 1건 — EvaluationItemResult.objects.create() 인자와 1:1 대응."""
+
+    attempt: int
+    call: ModelCallResult
+    extracted: str
+    strict_answer: bool
+    is_correct: bool
+    ok: bool
+
+
+@dataclass(frozen=True)
+class QuestionOutcome:
+    """문항 1개짜리 워커 태스크의 전체 반환값. item_index로 원래 순서를 보존합니다.
+    워커 스레드는 이 dataclass만 반환하고 Django ORM은 절대 건드리지 않습니다 —
+    DB 쓰기와 통계 누적은 전부 메인 스레드에서 fan-in할 때 처리합니다."""
+
+    item_index: int
+    question: EvaluationQuestion
+    attempts: list
+    router_call: object = None
+    chosen_model: object = None
+    choice: str = ""
+
+
 class PilotEvaluationRunner:
+    MAX_CONCURRENCY = 30  # 동시 요청 상한. 데이터셋 최대 500문항 기준으로 안전하게 잡은 값.
+
     def __init__(self):
         self.provider_registry = ProviderRegistry()
+
+    def _resolve_concurrency(self, config: dict) -> int:
+        try:
+            value = int(config.get("concurrency") or 1)
+        except (TypeError, ValueError):
+            value = 1
+        return max(1, min(value, self.MAX_CONCURRENCY))
 
     def execute(self, run: EvaluationRun) -> EvaluationRun:
         run.status = "running"
@@ -182,15 +220,17 @@ class PilotEvaluationRunner:
 
         result.item_results.all().delete()
         max_retries = max(0, int(config.get("retry") or config.get("max_retries") or 0))
+        concurrency = self._resolve_concurrency(config)
         run_started = time.perf_counter()
 
         kv_cache_samples = []
         kv_cache_thread, kv_cache_stop = start_kv_cache_poller(provider, kv_cache_samples)
 
-        for item_index, question in enumerate(questions, start=1):
+        def run_question(item_index: int, question: EvaluationQuestion) -> QuestionOutcome:
+            """워커 스레드에서 실행 — HTTP 호출과 순수 채점만 하고 Django ORM은 건드리지 않습니다."""
             prompt = self.build_item_prompt(method_type, question, config)
             prompt_tokens = estimate_tokens(prompt)
-            final_record = None
+            attempts = []
 
             for attempt in range(1, max_retries + 2):
                 call = execute_model_call(
@@ -202,9 +242,36 @@ class PilotEvaluationRunner:
                 )
                 prompt_tokens = call.input_tokens
                 extracted, strict_answer, is_correct, ok = self.grade_output(method_type, call.output_text, question)
-                if call.error:
-                    result.error_message = call.error
+                attempts.append(ItemAttemptOutcome(
+                    attempt=attempt, call=call, extracted=extracted,
+                    strict_answer=strict_answer, is_correct=is_correct, ok=ok,
+                ))
+                if ok or attempt > max_retries:
+                    break
 
+            return QuestionOutcome(item_index=item_index, question=question, attempts=attempts)
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(run_question, item_index, question): item_index
+                for item_index, question in enumerate(questions, start=1)
+            }
+            outcomes = {}
+            for future in as_completed(futures):
+                outcome = future.result()
+                outcomes[outcome.item_index] = outcome
+
+        run_elapsed_seconds = time.perf_counter() - run_started
+        stop_kv_cache_poller(kv_cache_thread, kv_cache_stop)
+
+        # Fan-in: 완료 순서가 아니라 원래 문항 순서대로 DB에 쓰고 통계를 누적합니다 —
+        # 오늘의 순차 실행과 동일한 순서/의미를 유지하기 위함입니다.
+        for item_index, question in enumerate(questions, start=1):
+            outcome = outcomes[item_index]
+            if not outcome.attempts:
+                continue
+            for attempt_outcome in outcome.attempts:
+                call = attempt_outcome.call
                 final_record = EvaluationItemResult.objects.create(
                     result=result,
                     run=result.run,
@@ -214,13 +281,13 @@ class PilotEvaluationRunner:
                     question=question.question,
                     choices=question.choices,
                     gold=question.answer[:16],
-                    predicted_choice=extracted,
-                    strict_ok=strict_answer,
-                    is_correct=is_correct,
-                    ok=ok,
-                    attempt=attempt,
+                    predicted_choice=attempt_outcome.extracted,
+                    strict_ok=attempt_outcome.strict_answer,
+                    is_correct=attempt_outcome.is_correct,
+                    ok=attempt_outcome.ok,
+                    attempt=attempt_outcome.attempt,
                     error=call.error,
-                    input_tokens=prompt_tokens,
+                    input_tokens=call.input_tokens,
                     output_tokens=call.output_tokens,
                     latency_ms=call.latency_ms,
                     ttft_ms=call.ttft_ms,
@@ -228,12 +295,10 @@ class PilotEvaluationRunner:
                     subject=question.subject,
                     category=question.category,
                 )
-                if ok or attempt > max_retries:
-                    break
+                if call.error:
+                    result.error_message = call.error
 
-            input_tokens += prompt_tokens
-            if final_record is None:
-                continue
+            input_tokens += final_record.input_tokens
             output_tokens += final_record.output_tokens
             latency_stats.record(
                 ok=final_record.ok,
@@ -254,9 +319,6 @@ class PilotEvaluationRunner:
                 correct += 1
             self.add_group_stat(category_stats, question.category, final_record.is_correct)
             self.add_group_stat(subject_stats, question.subject, final_record.is_correct)
-
-        run_elapsed_seconds = time.perf_counter() - run_started
-        stop_kv_cache_poller(kv_cache_thread, kv_cache_stop)
 
         total = len(questions)
         result.status = "completed" if failures < total else "failed"
@@ -344,19 +406,13 @@ class PilotEvaluationRunner:
 
         try:
             small_provider = self.provider_registry.get(small_model.provider, credential=small_model.provider_credential)
+            large_provider = self.provider_registry.get(large_model.provider, credential=large_model.provider_credential)
         except Exception as exc:
             result.status = "failed"
             result.failure_rate = Decimal("1.0000")
             result.error_message = str(exc)
             result.save()
             return
-
-        provider_by_model_id = {small_model.id: small_provider}
-
-        def get_provider_for(model):
-            if model.id not in provider_by_model_id:
-                provider_by_model_id[model.id] = self.provider_registry.get(model.provider, credential=model.provider_credential)
-            return provider_by_model_id[model.id]
 
         latency_stats = LatencyStats()
         correct = 0
@@ -373,12 +429,15 @@ class PilotEvaluationRunner:
 
         result.item_results.all().delete()
         max_retries = max(0, int(config.get("retry") or config.get("max_retries") or 0))
+        concurrency = self._resolve_concurrency(config)
         run_started = time.perf_counter()
 
         kv_cache_samples = []
         kv_cache_thread, kv_cache_stop = start_kv_cache_poller(small_provider, kv_cache_samples)
 
-        for item_index, question in enumerate(questions, start=1):
+        def run_routing_question(item_index: int, question: EvaluationQuestion) -> QuestionOutcome:
+            """워커 스레드에서 실행 — 라우터 호출 + 채점 호출(둘 다 HTTP)과 순수 채점만 하고
+            Django ORM은 건드리지 않습니다."""
             router_prompt = self.build_router_prompt(routing_config.routing_prompt, question)
             router_call = execute_model_call(
                 small_provider,
@@ -388,16 +447,12 @@ class PilotEvaluationRunner:
                 prompt_tokens_estimate=estimate_tokens(router_prompt),
             )
             choice = self.parse_router_choice(router_call.output_text)
-            routing_counts[choice] += 1
-            if router_call.latency_ms is not None:
-                router_latencies.append(router_call.latency_ms)
             chosen_model = large_model if choice == "large" else small_model
-            provider = get_provider_for(chosen_model)
-            estimated_cost += estimate_cost(small_model, router_call.input_tokens, router_call.output_tokens)
+            provider = large_provider if choice == "large" else small_provider
 
             prompt = self.build_item_prompt(method_type, question, config)
             prompt_tokens = estimate_tokens(prompt)
-            final_record = None
+            attempts = []
 
             for attempt in range(1, max_retries + 2):
                 call = execute_model_call(
@@ -409,9 +464,45 @@ class PilotEvaluationRunner:
                 )
                 prompt_tokens = call.input_tokens
                 extracted, strict_answer, is_correct, ok = self.grade_output(method_type, call.output_text, question)
-                if call.error:
-                    result.error_message = call.error
+                attempts.append(ItemAttemptOutcome(
+                    attempt=attempt, call=call, extracted=extracted,
+                    strict_answer=strict_answer, is_correct=is_correct, ok=ok,
+                ))
+                if ok or attempt > max_retries:
+                    break
 
+            return QuestionOutcome(
+                item_index=item_index, question=question, attempts=attempts,
+                router_call=router_call, chosen_model=chosen_model, choice=choice,
+            )
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(run_routing_question, item_index, question): item_index
+                for item_index, question in enumerate(questions, start=1)
+            }
+            outcomes = {}
+            for future in as_completed(futures):
+                outcome = future.result()
+                outcomes[outcome.item_index] = outcome
+
+        run_elapsed_seconds = time.perf_counter() - run_started
+        stop_kv_cache_poller(kv_cache_thread, kv_cache_stop)
+
+        # Fan-in: 완료 순서가 아니라 원래 문항 순서대로 DB에 쓰고 통계를 누적합니다.
+        for item_index, question in enumerate(questions, start=1):
+            outcome = outcomes[item_index]
+            if not outcome.attempts:
+                continue
+            router_call = outcome.router_call
+            chosen_model = outcome.chosen_model
+            routing_counts[outcome.choice] += 1
+            if router_call.latency_ms is not None:
+                router_latencies.append(router_call.latency_ms)
+            estimated_cost += estimate_cost(small_model, router_call.input_tokens, router_call.output_tokens)
+
+            for attempt_outcome in outcome.attempts:
+                call = attempt_outcome.call
                 final_record = EvaluationItemResult.objects.create(
                     result=result,
                     run=result.run,
@@ -421,13 +512,13 @@ class PilotEvaluationRunner:
                     question=question.question,
                     choices=question.choices,
                     gold=question.answer[:16],
-                    predicted_choice=extracted,
-                    strict_ok=strict_answer,
-                    is_correct=is_correct,
-                    ok=ok,
-                    attempt=attempt,
+                    predicted_choice=attempt_outcome.extracted,
+                    strict_ok=attempt_outcome.strict_answer,
+                    is_correct=attempt_outcome.is_correct,
+                    ok=attempt_outcome.ok,
+                    attempt=attempt_outcome.attempt,
                     error=call.error,
-                    input_tokens=prompt_tokens,
+                    input_tokens=call.input_tokens,
                     output_tokens=call.output_tokens,
                     latency_ms=call.latency_ms,
                     ttft_ms=call.ttft_ms,
@@ -436,12 +527,10 @@ class PilotEvaluationRunner:
                     subject=question.subject,
                     category=question.category,
                 )
-                if ok or attempt > max_retries:
-                    break
+                if call.error:
+                    result.error_message = call.error
 
-            input_tokens += prompt_tokens + router_call.input_tokens
-            if final_record is None:
-                continue
+            input_tokens += final_record.input_tokens + router_call.input_tokens
             output_tokens += final_record.output_tokens + router_call.output_tokens
             estimated_cost += estimate_cost(chosen_model, final_record.input_tokens, final_record.output_tokens)
             latency_stats.record(
@@ -463,9 +552,6 @@ class PilotEvaluationRunner:
                 correct += 1
             self.add_group_stat(category_stats, question.category, final_record.is_correct)
             self.add_group_stat(subject_stats, question.subject, final_record.is_correct)
-
-        run_elapsed_seconds = time.perf_counter() - run_started
-        stop_kv_cache_poller(kv_cache_thread, kv_cache_stop)
 
         total = len(questions)
         result.status = "completed" if failures < total else "failed"
