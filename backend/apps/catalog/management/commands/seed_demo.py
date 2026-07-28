@@ -541,14 +541,25 @@ class Command(BaseCommand):
 
     def seed_generated_datasets(self):
         fixture_root = Path(__file__).resolve().parents[4] / "fixtures" / "generated_datasets"
-        fixture_path = fixture_root / "general_faq_1000.json"
-        if not fixture_path.exists():
+        fixture_paths = sorted(fixture_root.glob("*.json"))
+        if not fixture_paths:
             return 0
+
+        seeded = 0
+        for fixture_path in fixture_paths:
+            seeded += self.seed_generated_dataset_fixture(fixture_path)
+        return seeded
+
+    def seed_generated_dataset_fixture(self, fixture_path):
         payload = self.read_json(fixture_path)
         feature = ServiceFeature.objects.filter(name=payload["service_feature_name"]).first()
         model = LLMModel.objects.filter(provider=payload.get("model_provider", ""), name=payload.get("model_name", "")).first()
         if not feature:
-            self.stdout.write(self.style.WARNING("Generated dataset fixture skipped; service feature was not found."))
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Generated dataset fixture skipped; service feature was not found: {fixture_path.name}"
+                )
+            )
             return 0
         raw_content = payload.get("raw_content", "")
         generated, _ = GeneratedDataset.objects.update_or_create(
