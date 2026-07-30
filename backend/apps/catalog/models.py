@@ -2,7 +2,14 @@ from django.db import models
 from django.conf import settings
 
 
+class LLMModelManager(models.Manager):
+    def get_by_natural_key(self, provider, name):
+        return self.get(provider=provider, name=name)
+
+
 class LLMModel(models.Model):
+    objects = LLMModelManager()
+
     PROVIDER_CHOICES = [
         ("ollama", "Ollama"),
         ("openai", "OpenAI"),
@@ -61,6 +68,9 @@ class LLMModel(models.Model):
     def __str__(self):
         return f"{self.provider}/{self.name}"
 
+    def natural_key(self):
+        return (self.provider, self.name)
+
     def to_candidate(self):
         from apps.catalog.entities import LLMModelCandidate
 
@@ -83,7 +93,14 @@ class LLMModel(models.Model):
         )
 
 
+class EvaluationDatasetManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
+
 class EvaluationDataset(models.Model):
+    objects = EvaluationDatasetManager()
+
     DATASET_TYPE_CHOICES = [
         ("multiple_choice", "Multiple Choice"),
         ("qa", "Question Answering"),
@@ -152,6 +169,9 @@ class EvaluationDataset(models.Model):
     def __str__(self):
         return self.name
 
+    def natural_key(self):
+        return (self.name,)
+
     @property
     def compatible_type_keys(self):
         keys = {self.dataset_type}
@@ -164,7 +184,14 @@ class EvaluationDataset(models.Model):
         return keys
 
 
+class EvaluationMethodManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
+
 class EvaluationMethod(models.Model):
+    objects = EvaluationMethodManager()
+
     METHOD_TYPE_CHOICES = [
         ("multiple_choice", "Multiple Choice"),
         ("generation", "Generation"),
@@ -190,8 +217,18 @@ class EvaluationMethod(models.Model):
     def __str__(self):
         return self.display_name
 
+    def natural_key(self):
+        return (self.name,)
+
+
+class EvaluationRunManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
 
 class EvaluationRun(models.Model):
+    objects = EvaluationRunManager()
+
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("running", "Running"),
@@ -238,6 +275,14 @@ class EvaluationRun(models.Model):
     def __str__(self):
         return self.name
 
+    def natural_key(self):
+        return (self.name,)
+
+
+class EvaluationDatasetSnapshotManager(models.Manager):
+    def get_by_natural_key(self, run_name):
+        return self.get(run__name=run_name)
+
 
 class EvaluationDatasetSnapshot(models.Model):
     """실험(run) 생성 시점에 문항을 확정해서 통째로 복제 저장합니다.
@@ -245,6 +290,8 @@ class EvaluationDatasetSnapshot(models.Model):
     EvaluationDataset은 raw_content 텍스트 blob을 매번 다시 파싱하는 구조라 안정적인
     문항 ID가 없습니다. 원본 데이터셋이 나중에 바뀌어도 이 실험은 항상 그때 그 문항으로
     재현되도록, 인덱스가 아니라 문항 내용 자체를 questions_payload에 복제해 둡니다."""
+
+    objects = EvaluationDatasetSnapshotManager()
 
     run = models.OneToOneField(EvaluationRun, on_delete=models.CASCADE, related_name="dataset_snapshot")
     dataset = models.ForeignKey(EvaluationDataset, on_delete=models.PROTECT, related_name="snapshots")
@@ -266,8 +313,23 @@ class EvaluationDatasetSnapshot(models.Model):
     def __str__(self):
         return f"snapshot for {self.run_id}"
 
+    def natural_key(self):
+        return self.run.natural_key()
+
+    natural_key.dependencies = ["catalog.evaluationrun"]
+
+
+class EvaluationResultManager(models.Manager):
+    def get_by_natural_key(self, run_name, model_key, result_type, candidate_label):
+        model = LLMModel.objects.get_by_natural_key(*model_key) if model_key else None
+        return self.get(
+            run__name=run_name, model=model, result_type=result_type, candidate_label=candidate_label
+        )
+
 
 class EvaluationResult(models.Model):
+    objects = EvaluationResultManager()
+
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("running", "Running"),
@@ -327,8 +389,22 @@ class EvaluationResult(models.Model):
     def __str__(self):
         return f"{self.run} - {self.model}"
 
+    def natural_key(self):
+        model_key = self.model.natural_key() if self.model_id else None
+        return (self.run.name, model_key, self.result_type, self.candidate_label)
+
+    natural_key.dependencies = ["catalog.evaluationrun", "catalog.llmmodel"]
+
+
+class EvaluationItemResultManager(models.Manager):
+    def get_by_natural_key(self, result_key, item_index):
+        result = EvaluationResult.objects.get_by_natural_key(*result_key)
+        return self.get(result=result, item_index=item_index)
+
 
 class EvaluationItemResult(models.Model):
+    objects = EvaluationItemResultManager()
+
     result = models.ForeignKey(EvaluationResult, on_delete=models.CASCADE, related_name="item_results")
     run = models.ForeignKey(EvaluationRun, on_delete=models.CASCADE, related_name="item_results")
     dataset = models.ForeignKey(EvaluationDataset, on_delete=models.CASCADE, related_name="item_results")
@@ -368,6 +444,17 @@ class EvaluationItemResult(models.Model):
     def __str__(self):
         return f"{self.result_id} item {self.item_index} attempt {self.attempt}"
 
+    def natural_key(self):
+        return (self.result.natural_key(), self.item_index)
+
+    natural_key.dependencies = ["catalog.evaluationresult"]
+
+
+class EvaluationRoutingCandidateManager(models.Manager):
+    def get_by_natural_key(self, result_key):
+        result = EvaluationResult.objects.get_by_natural_key(*result_key)
+        return self.get(result=result)
+
 
 class EvaluationRoutingCandidate(models.Model):
     """routing 타입 EvaluationResult 하나에 붙는 라우팅 설정.
@@ -376,6 +463,8 @@ class EvaluationRoutingCandidate(models.Model):
     (별도 Router Model 선택 없음). 향후 Router Model을 선택 가능하게 하려면 이 모델에
     nullable `router_model` FK를 추가하고 "없으면 small_model을 쓴다"는 fallback만 넣으면
     되므로, 지금 스키마를 깨지 않고 확장할 수 있습니다."""
+
+    objects = EvaluationRoutingCandidateManager()
 
     result = models.OneToOneField(EvaluationResult, on_delete=models.CASCADE, related_name="routing_config")
     routing_prompt = models.TextField()
@@ -397,6 +486,11 @@ class EvaluationRoutingCandidate(models.Model):
 
     def __str__(self):
         return f"routing config for {self.result_id}"
+
+    def natural_key(self):
+        return (self.result.natural_key(),)
+
+    natural_key.dependencies = ["catalog.evaluationresult"]
 
 
 class RoutingPolicy(models.Model):
@@ -555,7 +649,14 @@ class RecoveryStrategy(models.Model):
         return f"{self.strategy_id} - {self.name}"
 
 
+class ProviderCredentialManager(models.Manager):
+    def get_by_natural_key(self, provider, display_name):
+        return self.get(provider=provider, display_name=display_name)
+
+
 class ProviderCredential(models.Model):
+    objects = ProviderCredentialManager()
+
     PROVIDER_CHOICES = [
         ("ollama", "Ollama"),
         ("openai", "OpenAI"),
@@ -580,6 +681,9 @@ class ProviderCredential(models.Model):
 
     def __str__(self):
         return self.display_name
+
+    def natural_key(self):
+        return (self.provider, self.display_name)
 
     @property
     def base_url(self) -> str:

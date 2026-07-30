@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
@@ -258,9 +259,11 @@ class Command(BaseCommand):
         imported_results = self.seed_mmlu_experiment()
         generated_datasets = self.seed_generated_datasets()
         routing_demo = self.seed_routing_experiment_demo()
+        custom_experiments = self.seed_custom_experiments()
         self.stdout.write(self.style.SUCCESS(
             f"Seeded demo models, policies, {imported_results} imported MMLU results, "
-            f"{generated_datasets} generated datasets, and {routing_demo} routing experiment demo run(s)."))
+            f"{generated_datasets} generated datasets, {routing_demo} routing experiment demo run(s), "
+            f"and {custom_experiments} custom experiment(s)."))
 
     def seed_routing_experiment_demo(self) -> int:
         """라우팅 실험(M4/M5) 화면 확인용 데모 — 라우팅 후보와 단일 모델 후보를 한 실험 안에 같이 만들어 둡니다.
@@ -581,6 +584,27 @@ class Command(BaseCommand):
             },
         )
         return 1 if generated else 0
+
+    def seed_custom_experiments(self) -> int:
+        """export_experiment 커맨드로 내보낸 fixture(backend/fixtures/experiments/*.json)를 심습니다.
+        각 fixture는 Django 표준 fixture 포맷(자연키 사용)이라 loaddata로 그대로 불러오면 됩니다.
+        같은 이름의 EvaluationRun이 이미 있으면(한 번 심었으면) 다시 만들지 않습니다."""
+        fixture_root = Path(__file__).resolve().parents[4] / "fixtures" / "experiments"
+        if not fixture_root.exists():
+            return 0
+
+        seeded = 0
+        for fixture_path in sorted(fixture_root.glob("*.json")):
+            records = self.read_json(fixture_path)
+            run_record = next((r for r in records if r["model"] == "catalog.evaluationrun"), None)
+            if not run_record:
+                continue
+            run_name = run_record["fields"]["name"]
+            if EvaluationRun.objects.filter(name=run_name).exists():
+                continue
+            call_command("loaddata", str(fixture_path))
+            seeded += 1
+        return seeded
 
     def seed_mmlu_experiment(self) -> int:
         fixture_root = Path(__file__).resolve().parents[4] / "fixtures" / "imported_mmlu"
