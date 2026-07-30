@@ -82,6 +82,19 @@ The adapters use:
 - OpenAI Responses API: `POST https://api.openai.com/v1/responses`
 - Gemini generateContent API: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
 
+## Export an Experiment into Seed Data
+
+```bash
+backend/.venv/Scripts/python backend/manage.py export_experiment --run "<experiment name>"
+```
+
+This writes `backend/fixtures/experiments/<slug>.json`, containing the run, its dataset, models, results, and item results. `seed_demo` seeds this file automatically alongside the built-in demo data on every subsequent run, skipping it if a run with the same name already exists.
+
+Provider credential access tokens are excluded from the export. The credential is seeded inactive with no token; re-entering it via the Credentials screen or environment variables is required after re-seeding if the model needs live calls again.
+
+If `--run` matches more than one run (names are not guaranteed unique), `--run-id <id>` selects one explicitly. The run id is shown in the Evaluation Runs screen as `Run #<id>`.
+
+
 ## Research Docs
 
 Research plans, experiment protocols, reports, and archived legacy analyses live under [`docs/`](docs/README.md). `seed_demo` imports preserved MMLU artifacts from `backend/fixtures/imported_mmlu/`.
