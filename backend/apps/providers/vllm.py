@@ -23,11 +23,20 @@ class VLLMProvider(BaseLLMProvider):
         self.base_url = resolved_base_url.rstrip("/")
 
     def chat(self, *, model: str, messages: list[dict], options: Optional[dict] = None) -> LLMResponse:
-        payload = {
-            "model": model,
-            "messages": messages,
-            "chat_template_kwargs": {"enable_thinking": False},   
-        }
+        if model == "Qwen/Qwen3.5-122B-A10B":
+            print(f"model: {model}-thinking")
+            payload = {
+                "model": model,
+                "messages": messages,
+                "chat_template_kwargs": {"enable_thinking": True},   
+            }
+        else:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "chat_template_kwargs": {"enable_thinking": False},   
+            }
+
         payload.update(options or {})
 
         payload["stream"] = True
