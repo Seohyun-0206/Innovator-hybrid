@@ -18,8 +18,17 @@ class HasScreenAccess(BasePermission):
         required_screen = getattr(view, "required_screen", None)
         if not required_screen:
             return True
-        if required_screen not in get_allowed_screens(request.user):
-            return False
+        allowed_screens = get_allowed_screens(request.user)
+        if required_screen not in allowed_screens:
+            # 차트 화면은 평가 실행/결과 API를 읽기 전용으로 재사용합니다. 별도 실행·수정 권한은 부여하지 않습니다.
+            chart_read_screens = {"evaluation-runs", "model-evaluation"}
+            has_chart_read_access = (
+                "model-evaluation-chart" in allowed_screens
+                and required_screen in chart_read_screens
+                and request.method in ("GET", "HEAD", "OPTIONS")
+            )
+            if not has_chart_read_access:
+                return False
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return True
         return required_screen in self.execute_screens

@@ -7,6 +7,7 @@ DEFAULT_SCREENS = [
     {"id": "evaluation-methods", "label": "평가방식"},
     {"id": "evaluation-runs", "label": "평가 실행"},
     {"id": "model-evaluation", "label": "평가 결과"},
+    {"id": "model-evaluation-chart", "label": "결과 분석 (Chart)"},
     {"id": "evaluation-item-results", "label": "문항별 로그"},
     {"id": "evaluation-artifacts", "label": "산출물"},
     {"id": "tier-recommendation", "label": "Tier 추천"},
