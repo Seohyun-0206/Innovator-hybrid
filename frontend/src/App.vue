@@ -9,6 +9,7 @@ import Playground from './pages/Playground.vue'
 import RoutingLogs from './pages/RoutingLogs.vue'
 import Users from './pages/Users.vue'
 import ModelEvaluation from './pages/ModelEvaluation.vue'
+import ModelEvaluationChart from './pages/ModelEvaluationChart.vue'
 import EvaluationDatasets from './pages/EvaluationDatasets.vue'
 import GeneratedDatasets from './pages/GeneratedDatasets.vue'
 import EvaluationMethods from './pages/EvaluationMethods.vue'
@@ -19,6 +20,7 @@ import ServiceFeatureMapping from './pages/ServiceFeatureMapping.vue'
 import Login from './pages/Login.vue'
 import {
   ArchiveIcon,
+  BarChart3Icon,
   BotIcon,
   ClipboardListIcon,
   CpuIcon,
@@ -44,6 +46,7 @@ const tabs = [
   { id: 'dashboard', label: '대시보드', component: Dashboard, group: 'dashboard', icon: LayoutDashboardIcon },
   { id: 'evaluation-runs', label: '실험 실행', component: EvaluationRuns, group: 'experiments', icon: PlayIcon },
   { id: 'model-evaluation', label: '결과 분석', component: ModelEvaluation, group: 'experiments', icon: FlaskConicalIcon },
+  { id: 'model-evaluation-chart', label: '결과 분석 (Chart)', component: ModelEvaluationChart, group: 'experiments', icon: BarChart3Icon },
   { id: 'evaluation-item-results', label: '문항별 로그', component: EvaluationItemResults, group: 'experiments', icon: FileSearchIcon },
   { id: 'evaluation-artifacts', label: '산출물', component: EvaluationArtifacts, group: 'experiments', icon: ArchiveIcon },
   { id: 'models', label: '모델', component: Models, group: 'resources', icon: CpuIcon },
